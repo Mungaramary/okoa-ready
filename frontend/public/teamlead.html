@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Team Lead Tools — Okoa</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">OF</div><div class="title">Okoa Float</div></div>
+      <nav class="nav">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="payments.html">Payments</a>
+        <a href="accounts.html">Accounts</a>
+        <a href="reports.html">Reports</a>
+        <a href="tasks.html">Tasks</a>
+        <a class="active" href="teamlead.html">Team Lead</a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><h1>Team Lead Tools</h1></header>
+
+      <section class="card">
+        <h3>Create Collector</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input id="colName" class="input" placeholder="Collector name" />
+          <input id="colCode" class="input" placeholder="Optional login code" />
+          <button id="createCollector" class="btn">Create</button>
+        </div>
+        <div id="createStatus" class="subtitle"></div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h3>Collectors</h3>
+        <button id="refreshCollectors" class="btn secondary">Refresh</button>
+        <select id="collectorSelect" class="input" style="min-width:260px;margin-left:8px;"></select>
+        <div id="listStatus" class="subtitle" style="margin-top:6px;"></div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h3>Manual Payment Update</h3>
+        <div class="subtitle">Applies to selected collector</div>
+        <div style="display:grid;grid-template-columns:repeat(5, minmax(120px, 1fr));gap:8px;">
+          <input id="agentNo" class="input" placeholder="Agent No (optional)" />
+          <input id="amountPaid" class="input" placeholder="Amount Paid" type="number" />
+          <input id="loanAmount" class="input" placeholder="Loan Amount (optional)" type="number" />
+          <input id="loanBalance" class="input" placeholder="Loan Balance (optional)" type="number" />
+          <input id="date" class="input" placeholder="Date (optional ISO)" />
+        </div>
+        <button id="pushPayment" class="btn" style="margin-top:8px;">Push Update</button>
+        <div id="payStatus" class="subtitle"></div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h3>Upload Accounts for Collector</h3>
+        <input id="accFile" type="file" class="input" accept=".csv,.xlsx,.xls" />
+        <button id="accUpload" class="btn" style="margin-top:8px;">Upload</button>
+        <div id="accStatus" class="subtitle"></div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module">
+    import { apiFetch } from "./js/auth.js";
+
+    // guard: must be teamLead
+    if ((localStorage.getItem('x-role')||'collector') !== 'teamLead') {
+      alert('Team Lead only.');
+      location.href = 'dashboard.html';
+    }
+
+    async function refreshCollectors() {
+      const r = await apiFetch('/api/users?role=collector');
+      const j = await r.json();
+      if (!j.ok) { document.getElementById('listStatus').textContent = j.error; return; }
+      const sel = document.getElementById('collectorSelect');
+      sel.innerHTML = j.users.map(u => `<option value="${u._id}">${u.name} (${u._id})</option>`).join('');
+      document.getElementById('listStatus').textContent = `${j.users.length} collectors`;
+    }
+
+    document.getElementById('refreshCollectors').addEventListener('click', refreshCollectors);
+    refreshCollectors();
+
+    document.getElementById('createCollector').addEventListener('click', async ()=>{
+      const name = document.getElementById('colName').value.trim();
+      const code = document.getElementById('colCode').value.trim();
+      if (!name) return;
+      const r = await apiFetch('/api/users', { method:'POST', body: JSON.stringify({ name, code }) });
+      const j = await r.json();
+      document.getElementById('createStatus').textContent = j.ok ? `Created: ${j.user.name} (${j.user._id})` : (j.error||'Error');
+      if (j.ok) refreshCollectors();
+    });
+
+    document.getElementById('pushPayment').addEventListener('click', async ()=>{
+      const collectorId = document.getElementById('collectorSelect').value;
+      const agentNo = document.getElementById('agentNo').value.trim();
+      const amountPaid = Number(document.getElementById('amountPaid').value||0);
+      const loanAmount = Number(document.getElementById('loanAmount').value||0);
+      const loanBalance = Number(document.getElementById('loanBalance').value||0);
+      const date = document.getElementById('date').value.trim();
+      if (!collectorId || !amountPaid) { document.getElementById('payStatus').textContent = 'collector & amount required'; return; }
+
+      const r = await apiFetch('/api/payments/manual-update', {
+        method: 'POST',
+        body: JSON.stringify({ collectorId, agentNo, amountPaid, loanAmount, loanBalance, date })
+      });
+      const j = await r.json();
+      document.getElementById('payStatus').textContent = j.ok ? 'Pushed.' : (j.error||'Error');
+    });
+
+    document.getElementById('accUpload').addEventListener('click', async ()=>{
+      const collectorId = document.getElementById('collectorSelect').value;
+      const f = document.getElementById('accFile').files[0];
+      if (!collectorId || !f) { document.getElementById('accStatus').textContent = 'collector & file required'; return; }
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await apiFetch('/api/accounts/upload?collectorId='+encodeURIComponent(collectorId), {
+        method:'POST',
+        body: fd
+      });
+      const j = await r.json();
+      document.getElementById('accStatus').textContent = j.ok ? `Uploaded rows: ${j.inserted}` : (j.error||'Error');
+    });
+  </script>
+</body>
+</html>

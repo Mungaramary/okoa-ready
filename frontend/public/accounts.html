@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Okoa Float — Accounts</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .content { max-width: 100%; }
+    .table-wrap { max-height: 70vh; overflow:auto; }
+    #accountsTable thead th, #previewTable thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
+    #previewTable thead th.sortable { cursor: pointer; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .controls .spacer { flex:1 1 auto; }
+    .file-actions { display:inline-flex; gap:8px; align-items:center; }
+    .btn.small { padding:4px 8px; font-size:12px; }
+    table { border-collapse: separate; border-spacing:0; width:100%; }
+    thead th { font-weight:700; }
+    tbody tr:nth-child(even){ background:#fafafa; }
+    td, th { border-bottom:1px solid #eee; padding:8px 10px; }
+    .toggle { display:inline-flex; align-items:center; gap:6px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" style="display:flex;flex-direction:column;">
+      <div class="brand"><div class="logo">OF</div><div class="title">Okoa Float</div></div>
+      <nav class="nav">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="payments.html">Payments</a>
+        <a href="accounts.html" class="active">Accounts</a>
+        <a href="reports.html">Reports</a>
+        <a href="tasks.html">Tasks</a>
+      </nav>
+      <button id="logoutBtn" class="btn danger" style="margin-top:auto;">Logout</button>
+    </aside>
+
+    <main class="content">
+      <header class="header"><h1>Accounts</h1></header>
+
+      <section class="card" id="uploadCard">
+        <h3>Upload Accounts (Team Leader)</h3>
+        <div class="controls">
+          <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" />
+          <select id="collectorSelect" class="input" style="min-width:220px;"></select>
+          <button id="uploadBtn" class="btn">Upload</button>
+          <button id="refreshBtn" class="btn">Refresh</button>
+          <span id="uploadStatus" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Available Files</h3>
+        <ul id="filesList" class="list"><li class="muted">Loading…</li></ul>
+      </section>
+
+      <section class="card" id="previewCard" style="display:none">
+        <div class="controls" style="margin-bottom:8px;">
+          <h3 id="previewTitle" style="margin-right:8px;">Preview</h3>
+          <label class="muted">Sheet:</label>
+          <select id="previewSheet" class="input"></select>
+          <button id="previewCsvBtn" class="btn">Export CSV</button>
+          <input id="previewSearch" class="input" placeholder="Search in file…" style="min-width:260px;" />
+          <div class="spacer"></div>
+          <label class="muted" for="previewPageSize">Rows:</label>
+          <select id="previewPageSize" class="input">
+            <option>25</option><option selected>50</option><option>100</option><option>150</option>
+          </select>
+          <button id="previewPrev" class="btn">Prev</button>
+          <span id="previewPageInfo" class="muted">Page 1</span>
+          <button id="previewNext" class="btn">Next</button>
+        </div>
+        <div class="table-wrap">
+          <table id="previewTable">
+            <thead id="previewThead"></thead>
+            <tbody id="previewTbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="controls" style="margin-bottom:8px;">
+          <h3 style="margin-right:8px;">Accounts Table</h3>
+          <input id="accSearch" class="input" placeholder="Search agent / msisdn / business / location" style="min-width:260px;" />
+          <div class="spacer"></div>
+          <label class="muted" for="accPageSize">Rows:</label>
+          <select id="accPageSize" class="input"><option>25</option><option selected>50</option><option>100</option><option>150</option></select>
+          <button id="accPrev" class="btn">Prev</button>
+          <span id="accPageInfo" class="muted">Page 1</span>
+          <button id="accNext" class="btn">Next</button>
+        </div>
+        <div class="table-wrap">
+          <table id="accountsTable">
+            <!-- DYNAMIC header + rows (for ALL columns from your sheet) -->
+            <thead id="accThead"></thead>
+            <tbody id="accTbody"><tr><td class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script type="module" src="js/accounts.js"></script>
+  <script type="module">
+    import { attachLogout } from "./js/auth.js";
+    attachLogout();
+  </script>
+</body>
+</html>

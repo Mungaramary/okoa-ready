@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Okoa Float — Reports</title>
+  <link rel="stylesheet" href="css/style.css"/>
+  <style>
+    .content{max-width:100%}
+    .card{background:#fff;border:1px solid #eee;border-radius:14px;padding:16px;margin:16px 0}
+    .btn{background:#ff9f1a;border:none;border-radius:10px;padding:10px 16px;cursor:pointer}
+    .muted{color:#777}
+    select, input[type="file"]{height:40px;border:1px solid #ddd;border-radius:8px;padding:0 10px}
+    .table{width:100%;border-collapse:collapse}
+    .table th,.table td{padding:10px 12px;border-bottom:1px solid #f0f0f0;font-size:14px}
+    .table-wrap{max-height:70vh;overflow:auto;border:1px solid #eee;border-radius:12px}
+    #previewWrap{display:none}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">OF</div>
+        <div class="title">Okoa Float</div>
+      </div>
+      <nav class="nav">
+        <a href="/dashboard.html">Dashboard</a>
+        <a href="/payments.html">Payments</a>
+        <a href="/accounts.html">Accounts</a>
+        <a href="/reports.html" class="active">Reports</a>
+        <a href="/tasks.html">Tasks</a>
+      </nav>
+      <div class="sidebar-footer" style="padding:12px;margin-top:auto">
+        <button id="logoutBtn" class="btn" style="width:100%;">Logout</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <h1>Reports</h1>
+
+      <section class="card">
+        <h3>Upload Report (Collector)</h3>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:12px">
+          <input type="file" id="reportFile" accept=".xlsx,.xls,.csv"/>
+          <div>
+            <button id="reportUploadBtn" class="btn">Upload</button>
+            <span id="reportUploadStatus" class="muted"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Submitted Reports</h3>
+        <ul id="reportsList"></ul>
+      </section>
+
+      <section id="previewWrap" class="card">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <h3 id="previewTitle" style="margin:0">Preview</h3>
+          <label>Sheet:
+            <select id="sheetSelect"></select>
+          </label>
+          <input id="searchInput" placeholder="Search file..." style="height:36px;border:1px solid #ddd;border-radius:8px;padding:0 10px"/>
+          <label>Rows:
+            <select id="rowsSelect">
+              <option>50</option><option>100</option><option>200</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table id="previewTable" class="table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ✅ Add this line to load SheetJS -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Your page logic -->
+  <script type="module" src="./js/reports.js"></script>
+
+  <script>
+    (function() {
+      var btn = document.getElementById('logoutBtn');
+      if (!btn || btn._bound) return; btn._bound = true;
+      btn.addEventListener('click', function(e){
+        e.preventDefault();
+        try { localStorage.removeItem('okoa_user'); } catch(e){}
+        window.location.href = '/index.html';
+      });
+    })();
+  </script>
+</body>
+</html>
+
+
+

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Okoa Float — Sign in</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>body{display:flex;min-height:100vh}.auth-wrap{margin:auto;width:100%;max-width:480px}.card{padding:24px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:12px}.brand .logo{width:42px;height:42px;border-radius:10px;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}.brand .title{font-size:20px;font-weight:800}.row{display:grid;gap:12px}.actions{display:flex;align-items:center;gap:10px;margin-top:12px}.muted{color:#566}.input,select{width:100%}</style>
+</head>
+<body>
+  <main class="auth-wrap">
+    <div class="card">
+      <div class="brand"><div class="logo">OF</div><div class="title">Okoa Float</div></div>
+      <h2 style="margin:0 0 16px;">Choose your role</h2>
+      <form id="loginForm" novalidate>
+        <div class="row">
+          <label for="role">Role</label>
+          <select id="role" class="input" name="role" required>
+            <option value="team_leader">Team Leader</option>
+            <option value="collector1">Collector 1</option>
+            <option value="collector2">Collector 2</option>
+            <option value="collector3">Collector 3</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button id="loginBtn" class="btn" type="submit">Enter</button>
+          <span id="loginStatus" class="muted"></span>
+        </div>
+      </form>
+      <p class="muted" style="margin-top:10px;">Tip: Press <strong>Enter</strong> to sign in faster.</p>
+    </div>
+  </main>
+  <script type="module" src="js/login.js"></script>
+</body>
+</html>
