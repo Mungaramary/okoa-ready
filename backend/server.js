@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
-// --- Static dirs (same as before) ---
+// --- Static dirs ---
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend", "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -30,7 +30,7 @@ function ensureSubdir(type) {
   return dir;
 }
 
-// Multer storage (unchanged)
+// Multer storage
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => cb(null, ensureSubdir(req.uploadType || "misc")),
   filename: (req, file, cb) => {
@@ -41,7 +41,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Middleware & static (unchanged)
+// Middleware & static
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -320,25 +320,31 @@ app.get(["/index", "/index.html"], (_req, res) => {
 });
 app.use((_req, res) => res.status(404).send("Page not found"));
 
-// ---------- Mount Tasks AFTER DB ready, then start ----------
-mongoose.connection.once("open", () => {
-  try {
-    const nativeDb = mongoose.connection.db; // native Mongo DB for tasks router
-    if (nativeDb) {
-      app.use("/api", tasksRouter(nativeDb));
-      console.log("🧩 Tasks API mounted at /api/tasks");
-    } else {
-      console.warn("⚠️ tasks router not mounted: nativeDb missing");
-    }
-  } catch (e) {
-    console.warn("⚠️ tasks router mount error:", e.message);
-  }
+/* ---------- SAFE MOUNT of Tasks & START ---------- */
 
-  app.listen(PORT, HOST, () => {
-    console.log(`🚀 Server at http://${HOST}:${PORT}`);
-    console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
-    console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
-  });
+let tasksMounted = false;
+function tryMountTasks() {
+  if (tasksMounted) return;
+  const state = mongoose.connection.readyState;
+  const nativeDb = mongoose.connection.db;
+  if (state === 1 && nativeDb) {
+    app.use("/api", tasksRouter(nativeDb));
+    tasksMounted = true;
+    console.log("🧩 Tasks API mounted at /api/tasks (state:", state, ")");
+  }
+}
+
+// Mount immediately if already connected (fast boots), and also on events
+tryMountTasks();
+mongoose.connection.once("open", tryMountTasks);
+mongoose.connection.on("connected", tryMountTasks);
+
+// Start server immediately; Tasks mounts as soon as DB is ready
+app.listen(PORT, HOST, () => {
+  console.log(`🚀 Server at http://${HOST}:${PORT}`);
+  console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
+  console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
 });
+
 
 
