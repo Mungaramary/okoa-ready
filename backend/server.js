@@ -9,7 +9,7 @@ const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
-// Your Tasks router (expects a native Mongo DB handle)
+// Tasks router (expects native Mongo DB handle)
 const tasksRouter = require("./routes/tasks");
 
 const app = express();
@@ -18,12 +18,12 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
-// --- Static dirs (unchanged from your version) ---
+// --- Static dirs (same as before) ---
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend", "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// helper to create per-type subdirs (unchanged)
+// Per-type upload subdirs
 function ensureSubdir(type) {
   const dir = path.join(UPLOAD_DIR, type);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -41,19 +41,18 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Middleware (unchanged)
+// Middleware & static (unchanged)
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(FRONTEND_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// --- Mongo connection (unchanged API, just used later for Tasks mount) ---
+// ----- Mongo connect -----
 if (!MONGODB_URI) {
-  console.error("❌ No MONGODB_URI (or MONGO_URI) in .env / environment");
+  console.error("❌ No MONGODB_URI (or MONGO_URI) in environment");
   process.exit(1);
 }
-
 mongoose
   .connect(MONGODB_URI)
   .then(() => console.log("✅ MongoDB connected"))
@@ -67,7 +66,7 @@ const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
 
-// Serve uploads (idempotent; keeping as in your file)
+// Extra assurance uploads are served
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
@@ -75,7 +74,7 @@ app.use("/uploads", express.static(uploadsDir));
 // ---------- HEALTH ----------
 app.get("/api/health", async (_req, res) => {
   try {
-    const state = mongoose.connection.readyState; // 1=connected
+    const state = mongoose.connection.readyState; // 1 = connected
     const [payments, files] = await Promise.all([
       Payment.countDocuments().catch(() => -1),
       FileModel.countDocuments().catch(() => -1),
@@ -116,7 +115,7 @@ app.get("/api/users/collectors", async (_req, res) => {
   }
 });
 
-// ---------- Excel serial -> JS Date (unchanged) ----------
+// ---------- Excel serial -> JS Date ----------
 function excelSerialToDate(n) {
   if (typeof n !== "number" || !isFinite(n)) return null;
   const utcDays = Math.floor(n - 25569);
@@ -298,7 +297,7 @@ app.get("/api/reports/files", async (_req, res) => {
   }
 });
 
-// ---------- HTML routing (unchanged) ----------
+// ---------- HTML routing ----------
 function sendHtml(res, file) {
   const full = path.join(FRONTEND_DIR, file);
   if (fs.existsSync(full)) return res.sendFile(full);
@@ -320,11 +319,10 @@ app.get(["/index", "/index.html"], (_req, res) => {
 });
 app.use((_req, res) => res.status(404).send("Page not found"));
 
-// ---------- Mount Tasks AFTER DB is ready, then start server ----------
+// ---------- Mount Tasks AFTER DB ready, then start ----------
 mongoose.connection.once("open", () => {
   try {
-    // Pass native Db handle to tasks router
-    const nativeDb = mongoose.connection.db;
+    const nativeDb = mongoose.connection.db; // native Mongo DB for tasks router
     if (nativeDb) {
       app.use("/api", tasksRouter(nativeDb));
       console.log("🧩 Tasks API mounted at /api/tasks");
@@ -341,3 +339,4 @@ mongoose.connection.once("open", () => {
     console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
   });
 });
+
