@@ -1,0 +1,3 @@
+// backend/server.js (HOTFIX fragment)
+// Add this line after other app.use('/api/...') calls:
+app.use("/api", require("./routes/dashboard"));
