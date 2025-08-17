@@ -1,37 +1,166 @@
-
+// frontend/public/js/tasks.js
 import { apiFetch, getUser, displayDateMMDDYYYY, attachLogout } from "./auth.js";
-const me = getUser(); attachLogout();
-function $(s){ return document.querySelector(s); }
-async function initAddTaskUI(){
-  const assSel=$("#taskAssignee");
-  if (me.role === "team_leader") {
-    try{ const r=await apiFetch("/api/users/collectors"); const list=await r.json(); assSel.innerHTML=(list||[]).map(c=>`<option value="${c.id}">${c.name}</option>`).join(""); }
-    catch{ assSel.innerHTML=`<option value="collector1">Collector 1</option><option value="collector2">Collector 2</option><option value="collector3">Collector 3</option>`; }
+attachLogout();
+
+const me = getUser(); // { role, name, collectorId, ... }
+
+const titleEl = document.querySelector('#taskTitle') || document.querySelector('input[placeholder="Task title"]') || document.querySelector('input[type="text"]');
+const whoEl   = document.querySelector('#taskAssignee') || document.querySelector('select');
+const dueEl   = document.querySelector('#taskDue') || document.querySelector('input[type="date"]');
+const descEl  = document.querySelector('#taskDesc') || document.querySelector('textarea');
+const addBtn  = document.querySelector('#addTaskBtn') || Array.from(document.querySelectorAll("button")).find(b => /add task/i.test(b.textContent));
+
+// List container — try table body first, else last card
+const tableBody = document.querySelector("#tasksTableBody") || document.querySelector("table tbody");
+const listContainer = tableBody ? tableBody : (document.querySelectorAll(".card")[document.querySelectorAll(".card").length - 1] || document.body);
+
+function normalizeCollectorId(x) {
+  if (!x) return "";
+  const v = String(x).toLowerCase().trim();
+  if (/collector\s*1/.test(v)) return "collector-1";
+  if (/collector\s*2/.test(v)) return "collector-2";
+  if (/collector\s*3/.test(v)) return "collector-3";
+  if (/^collector-\d+/.test(v)) return v;
+  return v;
+}
+
+(function initAssignee(){
+  if (!whoEl) return;
+  if ((me?.role || "").toLowerCase() === "team_leader") {
+    whoEl.innerHTML = `
+      <option value="collector-1">Collector 1</option>
+      <option value="collector-2">Collector 2</option>
+      <option value="collector-3">Collector 3</option>
+    `;
   } else {
-    assSel.innerHTML = `<option value="${me.id}">Me</option>`; assSel.disabled = true;
+    // Collector
+    const mine = me?.collectorId || "collector-1";
+    whoEl.innerHTML = `<option value="${mine}">Me</option>`;
+    whoEl.disabled = true;
   }
-  $("#addTaskBtn").addEventListener("click", async ()=>{
-    const title=$("#taskTitle").value.trim(); const assignedTo=$("#taskAssignee").value; const dueDate=$("#taskDue").value; const description=$("#taskDesc").value.trim(); const statusEl=$("#taskFormStatus");
-    if(!title){ statusEl.textContent="Title required"; return; } if(!assignedTo){ statusEl.textContent="Assignee required"; return; }
-    statusEl.textContent="Saving…";
-    const r=await apiFetch("/api/tasks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ title, assignedTo, dueDate, description })});
-    const j=await r.json().catch(()=>({})); statusEl.textContent=r.ok?"Task added":(j.error||"Failed");
-    if(r.ok){ $("#taskTitle").value=""; $("#taskDesc").value=""; $("#taskDue").value=""; } await loadTasks();
+})();
+
+async function createTask(){
+  const title = titleEl?.value?.trim();
+  const description = descEl?.value?.trim() || "";
+  let assignedTo = normalizeCollectorId(whoEl?.value || me?.collectorId || "");
+  if (!title) return alert("Enter a task title");
+  if (!assignedTo) {
+    if (me?.collectorId) assignedTo = me.collectorId;
+    else return alert("No assignee found");
+  }
+  const body = {
+    title,
+    description,
+    assignedTo,
+    dueDate: dueEl?.value || null,
+    createdBy: me?.name || me?.email || "unknown",
+    createdByName: me?.name || null,
+  };
+  const r = await apiFetch("/api/tasks", { method: "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) return alert(j.error || "Failed to create task");
+  if (titleEl) titleEl.value = "";
+  if (descEl)  descEl.value = "";
+  if (dueEl)   dueEl.value = "";
+  await loadTasks();
+}
+
+async function setStatus(id, status){
+  const r = await apiFetch(`/api/tasks/${id}/status`, { method: "PATCH", headers: { "Content-Type":"application/json" }, body: JSON.stringify({ status }) });
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) return alert(j.error || "Failed to update task");
+  await loadTasks();
+}
+
+async function attachFile(id, file){
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await apiFetch(`/api/tasks/${id}/attach`, { method: "POST", body: fd });
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) return alert(j.error || "Failed to upload attachment");
+  await loadTasks();
+}
+
+function ensureTable() {
+  if (tableBody) return tableBody;
+  // Build a simple table inside the container
+  const wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  wrap.innerHTML = `
+    <table class="table" style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr>
+          <th>Task</th><th>Assigned To</th><th>Status</th><th>Due</th><th>Attachments</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="tasksTableBody"></tbody>
+    </table>
+  `;
+  listContainer.innerHTML = "";
+  listContainer.appendChild(wrap);
+  return wrap.querySelector("#tasksTableBody");
+}
+
+function renderTasks(tasks){
+  const body = ensureTable();
+  if (!tasks || !tasks.length) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">No tasks yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = tasks.map(t=>{
+    const due = t.dueDate ? displayDateMMDDYYYY(new Date(t.dueDate)) : "-";
+    const atts = (t.attachments || []).map(a => `<a href="${a.path}" target="_blank">${a.name}</a>`).join(", ");
+    const actions = `
+      ${t.status !== "Done"
+        ? `<button class="btn small mark-done" data-id="${t._id}">Done</button>`
+        : `<button class="btn small mark-open" data-id="${t._id}">Reopen</button>`}
+      <label class="btn small" style="margin-left:6px;cursor:pointer;">
+        Attach<input type="file" data-id="${t._id}" style="display:none">
+      </label>
+    `;
+    return `
+      <tr>
+        <td>${t.title}<div class="muted">${t.description || ""}</div></td>
+        <td>${t.assignedTo}</td>
+        <td>${t.status}</td>
+        <td>${due}</td>
+        <td>${atts || "-"}</td>
+        <td>${actions}</td>
+      </tr>
+    `;
+  }).join("");
+
+  document.querySelectorAll(".mark-done").forEach(b=>{
+    b.addEventListener("click", ()=> setStatus(b.dataset.id, "Done"));
+  });
+  document.querySelectorAll(".mark-open").forEach(b=>{
+    b.addEventListener("click", ()=> setStatus(b.dataset.id, "Open"));
+  });
+  document.querySelectorAll('input[type="file"][data-id]').forEach(inp=>{
+    inp.addEventListener("change", ()=> {
+      if (inp.files && inp.files[0]) attachFile(inp.dataset.id, inp.files[0]);
+    });
   });
 }
-function normalizeTask(t){ return { title:t.title||t.name||"Untitled", assignee:t.assigneeName||t.assignedToName||t.collectorName||"", status:t.status||"open", due:t.dueDate||t.due||null, _id:t._id }; }
+
 async function loadTasks(){
-  const tb=$("#tasksTable tbody"); tb.innerHTML=`<tr><td colspan="5" class="muted">Loading…</td></tr>`;
-  try{ const r=await apiFetch(`/api/tasks`); const data=await r.json(); const tasks=Array.isArray(data)?data:(data.tasks||[]);
-    tb.innerHTML = tasks.length ? tasks.map(t=>{ const n=normalizeTask(t); const canEdit=me.role==="team_leader"; const canComplete=me.role==="team_leader"||n.status!=="done"; return `<tr data-id="${t._id}">
-      <td class="task-title">${n.title}</td>
-      <td>${n.assignee||"-"}</td>
-      <td>${canEdit?`<select class="task-status input"><option value="open" ${n.status==="open"?"selected":""}>open</option><option value="in_progress" ${n.status==="in_progress"?"selected":""}>in_progress</option><option value="done" ${n.status==="done"?"selected":""}>done</option></select>`:n.status}</td>
-      <td>${displayDateMMDDYYYY(n.due)}</td>
-      <td>${canComplete?`<button class="btn btn-mark-done">Mark done</button>`:""} ${canEdit?`<button class="btn btn-save-status">Save</button>`:""}</td>
-    </tr>`; }).join("") : `<tr><td colspan="5" class="muted">No tasks yet</td></tr>`;
-  }catch{ tb.innerHTML=`<tr><td colspan="5" class="muted">Failed to load tasks</td></tr>`; }
+  const role = (me?.role || "").toLowerCase();
+  const params = new URLSearchParams();
+  params.set("role", role);
+  if (role === "collector" && me?.collectorId) params.set("collectorId", me.collectorId);
+  if (role === "team_leader" && me?.name)       params.set("me", me.name);
+
+  const r = await apiFetch(`/api/tasks?${params.toString()}`);
+  const j = await r.json().catch(()=>({ error: "x" }));
+  if (!r.ok || j.error) {
+    const body = ensureTable();
+    body.innerHTML = `<tr><td colspan="6" class="muted">Failed to load tasks</td></tr>`;
+    return;
+  }
+  renderTasks(Array.isArray(j) ? j : []);
 }
-async function saveRowStatus(tr, newStatus){ const id=tr.getAttribute("data-id"); const r=await apiFetch(`/api/tasks/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({ status:newStatus })}); const j=await r.json().catch(()=>({})); if(!r.ok) alert(j.error||"Failed to update"); }
-document.addEventListener("click", async (e)=>{ const tr=e.target?.closest?.("tr[data-id]"); if(!tr) return; if(e.target.classList.contains("btn-mark-done")){ await saveRowStatus(tr,"done"); await loadTasks(); } if(e.target.classList.contains("btn-save-status")){ const sel=tr.querySelector(".task-status"); if(!sel) return; await saveRowStatus(tr, sel.value); await loadTasks(); } });
-await initAddTaskUI(); await loadTasks(); setInterval(loadTasks, 20000);
+
+if (addBtn && !addBtn._bound) { addBtn._bound = true; addBtn.addEventListener("click", (e)=>{ e.preventDefault(); createTask(); }); }
+
+loadTasks();

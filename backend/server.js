@@ -7,6 +7,7 @@ const mongoose = require("mongoose");
 const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
+const tasksRouter = require("./routes/tasks");
 
 const app = express();
 
@@ -44,7 +45,13 @@ mongoose
 const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
+// Serve uploads if not already
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+app.use("/uploads", express.static(uploadsDir));
 
+// Mount Tasks API under /api
+app.use("/api", tasksRouter(db));
 app.get("/api/health", async (req, res) => {
   try {
     const state = mongoose.connection.readyState;
