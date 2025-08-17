@@ -21,18 +21,18 @@ const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 // --- Static dirs (same as before) ---
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend", "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // Per-type upload subdirs
 function ensureSubdir(type) {
   const dir = path.join(UPLOAD_DIR, type);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 // Multer storage (unchanged)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, ensureSubdir(req.uploadType || "misc")),
+  destination: (req, _file, cb) => cb(null, ensureSubdir(req.uploadType || "misc")),
   filename: (req, file, cb) => {
     const ts = Date.now();
     const safe = (file.originalname || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -61,15 +61,13 @@ mongoose
     process.exit(1);
   });
 
-// Mongoose models (unchanged)
+// Mongoose models
 const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
 
-// Extra assurance uploads are served
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-app.use("/uploads", express.static(uploadsDir));
+// Serve uploads idempotently
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- HEALTH ----------
 app.get("/api/health", async (_req, res) => {
@@ -101,14 +99,17 @@ app.get("/api/users/collectors", async (_req, res) => {
       .sort({ name: 1 })
       .select({ _id: 1, name: 1 })
       .lean();
+
     const fallback = [
       { id: "collector-1", name: "Collector 1" },
       { id: "collector-2", name: "Collector 2" },
       { id: "collector-3", name: "Collector 3" },
     ];
+
     const list = existing?.length
       ? existing.map((u) => ({ id: String(u._id), name: u.name }))
       : fallback;
+
     res.json(list);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -163,7 +164,7 @@ app.post(
       const wb = XLSX.readFile(fullPath);
       const sheetName = wb.SheetNames[0];
       const ws = wb.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1 }); // AOA
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
       let header = data[0] || [];
       const idx = {
@@ -339,4 +340,5 @@ mongoose.connection.once("open", () => {
     console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
   });
 });
+
 
