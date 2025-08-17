@@ -9,8 +9,7 @@ const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
-// Tasks router (expects native Mongo DB handle)
-const tasksRouter = require("./routes/tasks");
+const tasksRouter = require("./routes/tasks"); // <-- lazy router
 
 const app = express();
 
@@ -18,19 +17,16 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
-// --- Static dirs ---
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend", "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// Per-type upload subdirs
 function ensureSubdir(type) {
   const dir = path.join(UPLOAD_DIR, type);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-// Multer storage
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => cb(null, ensureSubdir(req.uploadType || "misc")),
   filename: (req, file, cb) => {
@@ -41,14 +37,15 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Middleware & static
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(FRONTEND_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// ----- Mongo connect -----
+// Mount Tasks router immediately (it will return 503 until DB is ready)
+app.use("/api", tasksRouter());
+
 if (!MONGODB_URI) {
   console.error("❌ No MONGODB_URI (or MONGO_URI) in environment");
   process.exit(1);
@@ -61,18 +58,16 @@ mongoose
     process.exit(1);
   });
 
-// Mongoose models
 const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
 
-// Serve uploads idempotently
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- HEALTH ----------
 app.get("/api/health", async (_req, res) => {
   try {
-    const state = mongoose.connection.readyState; // 1 = connected
+    const state = mongoose.connection.readyState;
     const [payments, files] = await Promise.all([
       Payment.countDocuments().catch(() => -1),
       FileModel.countDocuments().catch(() => -1),
@@ -320,26 +315,7 @@ app.get(["/index", "/index.html"], (_req, res) => {
 });
 app.use((_req, res) => res.status(404).send("Page not found"));
 
-/* ---------- SAFE MOUNT of Tasks & START ---------- */
-
-let tasksMounted = false;
-function tryMountTasks() {
-  if (tasksMounted) return;
-  const state = mongoose.connection.readyState;
-  const nativeDb = mongoose.connection.db;
-  if (state === 1 && nativeDb) {
-    app.use("/api", tasksRouter(nativeDb));
-    tasksMounted = true;
-    console.log("🧩 Tasks API mounted at /api/tasks (state:", state, ")");
-  }
-}
-
-// Mount immediately if already connected (fast boots), and also on events
-tryMountTasks();
-mongoose.connection.once("open", tryMountTasks);
-mongoose.connection.on("connected", tryMountTasks);
-
-// Start server immediately; Tasks mounts as soon as DB is ready
+// Start server
 app.listen(PORT, HOST, () => {
   console.log(`🚀 Server at http://${HOST}:${PORT}`);
   console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
