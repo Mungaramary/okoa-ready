@@ -2,7 +2,7 @@
 import { apiFetch, getUser, attachLogout, displayDateMMDDYYYY } from "./auth.js";
 attachLogout();
 
-const me = getUser(); // { role, collectorId, ... }
+const me = getUser(); // { role, collectorId, name, ... }
 
 const uploadInput = document.querySelector('#paymentsUploadInput') || document.querySelector('input[type="file"]');
 const uploadBtn   = document.querySelector('#paymentsUploadBtn')   || Array.from(document.querySelectorAll("button")).find(b=>/upload/i.test(b.textContent));
@@ -21,7 +21,9 @@ function normalizeCollectorId(x) {
 
 (function initAssignee(){
   if (!whoEl) return;
-  if ((me?.role||"").toLowerCase()==="team_leader"){
+  const role = (me?.role||"").toLowerCase();
+  if (role==="team_leader"){
+    // keep your existing labels
     whoEl.innerHTML = `
       <option value="collector-1">Collector 1</option>
       <option value="collector-2">Collector 2</option>
@@ -34,11 +36,17 @@ function normalizeCollectorId(x) {
   }
 })();
 
+function fmtNum(n){ const v = Number(n||0); return isFinite(v) ? v.toLocaleString() : String(n||""); }
+
 async function loadPayments(){
   const params = new URLSearchParams();
   const role = (me?.role||"").toLowerCase();
-  if (role==="collector" && me?.collectorId) params.set("collectorId", me.collectorId);
-  // TL: if you have a selector to view a collector’s data, set params.set("collectorId", whoEl.value)
+
+  if (role==="collector" && me?.collectorId) {
+    params.set("collectorId", me.collectorId);
+  } else if (role==="team_leader" && whoEl?.value){
+    params.set("collectorId", normalizeCollectorId(whoEl.value));
+  }
 
   const r = await apiFetch(`/api/payments?${params.toString()}`);
   const rows = await r.json().catch(()=>[]);
@@ -55,12 +63,12 @@ function render(rows){
     const d = p.date ? displayDateMMDDYYYY(new Date(p.date)) : "-";
     return `
       <tr>
-        <td>${p.agentNo ?? ""}</td>
-        <td>${p.loanAmount ?? 0}</td>
-        <td>${p.amountPaid ?? 0}</td>
-        <td>${p.loanBalance ?? 0}</td>
-        <td>${d}</td>
         <td>${p.collectorId || "-"}</td>
+        <td>${p.agentNo ?? ""}</td>
+        <td>${fmtNum(p.loanAmount)}</td>
+        <td>${fmtNum(p.amountPaid)}</td>
+        <td>${fmtNum(p.loanBalance)}</td>
+        <td>${d}</td>
       </tr>
     `;
   }).join("");
@@ -80,14 +88,26 @@ async function doUpload(){
     ? `/api/payments/upload?collectorId=${encodeURIComponent(collectorId)}`
     : `/api/payments/upload`;
 
+  uploadBtn.disabled = true;
+  const oldLabel = uploadBtn.textContent;
+  uploadBtn.textContent = "Uploading…";
+
   const r = await apiFetch(url, { method:"POST", body: fd });
   const j = await r.json().catch(()=>({}));
-  if (!r.ok) return alert(j.error || "Upload failed");
+  uploadBtn.disabled = false;
+
+  if (!r.ok || !j.ok) {
+    uploadBtn.textContent = oldLabel;
+    return alert(j.error || "Upload failed");
+  }
 
   uploadInput.value = "";
+  uploadBtn.textContent = "Uploaded";
+  setTimeout(()=> uploadBtn.textContent = oldLabel, 1200);
   await loadPayments();
 }
 
+if (whoEl) whoEl.addEventListener("change", ()=> loadPayments());
 if (uploadBtn && !uploadBtn._bound){
   uploadBtn._bound = true;
   uploadBtn.addEventListener("click",(e)=>{ e.preventDefault(); doUpload(); });

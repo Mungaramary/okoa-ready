@@ -9,7 +9,7 @@ const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
-const tasksRouter = require("./routes/tasks"); // lazy tasks router (works as-is)
+const tasksRouter = require("./routes/tasks");
 
 const app = express();
 
@@ -43,7 +43,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(FRONTEND_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// Mount Tasks router immediately (it returns 503 until DB is ready)
+// Tasks API
 app.use("/api", tasksRouter());
 
 if (!MONGODB_URI) {
@@ -118,6 +118,13 @@ function excelSerialToDate(n) {
   const d = new Date(utcSeconds * 1000);
   return isNaN(d) ? null : d;
 }
+function coerceDate(val) {
+  if (val == null || val === "") return null;
+  if (typeof val === "number") return excelSerialToDate(val);
+  if (val instanceof Date) return isNaN(val) ? null : val;
+  const tryD = new Date(String(val).replace(/-/g, "/")); // be lenient
+  return isNaN(tryD) ? null : tryD;
+}
 
 // ---------- PAYMENTS ----------
 app.get("/api/payments", async (req, res) => {
@@ -135,6 +142,8 @@ app.get("/api/payments", async (req, res) => {
   }
 });
 
+// Accepts sheets with headers like: Collector | Agent | Loan Amount | Paid | Balance | Date
+// Flexible header matching; fixes dates (serials & strings)
 app.post(
   "/api/payments/upload",
   (req, _res, next) => {
@@ -162,51 +171,59 @@ app.post(
       const ws = wb.Sheets[sheetName];
       const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
-      let header = data[0] || [];
+      // Find header row (first non-empty row with >= 4 columns)
+      let headerRowIdx = 0;
+      while (headerRowIdx < data.length && (!data[headerRowIdx] || data[headerRowIdx].filter(Boolean).length < 4)) {
+        headerRowIdx++;
+      }
+      const header = (data[headerRowIdx] || []).map(h => String(h || "").trim().toLowerCase());
+
+      function findIdx(...keys) {
+        return header.findIndex(h => keys.some(k => h.includes(k)));
+      }
+
       const idx = {
-        agent: header.findIndex((h) => String(h).toLowerCase().includes("agent")),
-        loan: header.findIndex((h) => String(h).toLowerCase().includes("loan")),
-        paid: header.findIndex((h) => String(h).toLowerCase().includes("paid")),
-        bal: header.findIndex((h) => String(h).toLowerCase().includes("balance")),
-        date: header.findIndex((h) => String(h).toLowerCase().includes("date")),
+        collector: findIdx("collector"),
+        agent: findIdx("agent"),
+        loan: findIdx("loan amount", "loan"),
+        paid: findIdx("paid", "amount paid"),
+        bal: findIdx("balance", "outstanding"),
+        date: findIdx("date"),
       };
 
+      // If date still not found, assume last column is date
+      if (idx.date < 0 && header.length) idx.date = header.length - 1;
+
       const docs = [];
-      for (let i = 1; i < data.length; i++) {
-        const row = data[i];
-        if (!row) continue;
+      for (let i = headerRowIdx + 1; i < data.length; i++) {
+        const row = data[i] || [];
         const agentNo = idx.agent >= 0 ? row[idx.agent] : row[0];
         const loanAmount = Number(idx.loan >= 0 ? row[idx.loan] : 0) || 0;
         const amountPaid = Number(idx.paid >= 0 ? row[idx.paid] : 0) || 0;
         const loanBalance = Number(idx.bal >= 0 ? row[idx.bal] : 0) || 0;
-        let dateVal = idx.date >= 0 ? row[idx.date] : null;
-        let d = null;
-        if (typeof dateVal === "number") d = excelSerialToDate(dateVal);
-        else if (dateVal instanceof Date) d = dateVal;
-        else if (typeof dateVal === "string") {
-          const tryD = new Date(dateVal);
-          d = isNaN(tryD) ? null : tryD;
-        }
+        const dateVal = idx.date >= 0 ? row[idx.date] : null;
+
         docs.push({
-          collectorId,
+          collectorId, // who this batch belongs to
           agentNo,
           loanAmount,
           amountPaid,
           loanBalance,
-          date: d || new Date(),
+          date: coerceDate(dateVal) || new Date(),
           createdAt: new Date(),
         });
       }
+
       if (docs.length) await Payment.insertMany(docs);
 
-      res.json({ ok: true, file: saved, inserted: docs.length });
+      res.json({ ok: true, inserted: docs.length, file: saved });
     } catch (e) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: e.message || "Failed to parse file" });
     }
   }
 );
 
-// ---------- ACCOUNTS (scope by collector) ----------
+// ---------- ACCOUNTS (scoped) ----------
 app.post(
   "/api/accounts/upload",
   (req, _res, next) => {
@@ -217,7 +234,6 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      // TL should pass ?collectorId=collector-1 (or body)
       const collectorId = req.query.collectorId || req.body.collectorId || null;
 
       const saved = await FileModel.create({
@@ -226,7 +242,7 @@ app.post(
         path: `/uploads/accounts/${req.file.filename}`,
         size: req.file.size,
         type: "accounts",
-        collectorId, // <-- now stored
+        collectorId,
       });
       res.json({ ok: true, file: saved });
     } catch (e) {
@@ -235,8 +251,6 @@ app.post(
   }
 );
 
-// GET /api/accounts/files?role=collector&collectorId=collector-3
-// TL can optionally filter with ?collectorId=...
 app.get("/api/accounts/files", async (req, res) => {
   try {
     const role = String(req.query.role || "").toLowerCase();
@@ -244,10 +258,9 @@ app.get("/api/accounts/files", async (req, res) => {
 
     const q = { type: "accounts" };
     if (role === "collector") {
-      if (!collectorId) return res.json([]); // collectors must supply own id
+      if (!collectorId) return res.json([]);
       q.collectorId = collectorId;
     } else if (collectorId) {
-      // TL filter by chosen collector if provided
       q.collectorId = collectorId;
     }
 
@@ -267,7 +280,7 @@ app.get("/api/accounts/files", async (req, res) => {
   }
 });
 
-// ---------- REPORTS (optional per-collector scoping; same rule) ----------
+// ---------- REPORTS (optional scoped like accounts) ----------
 app.post(
   "/api/reports/upload",
   (req, _res, next) => {
@@ -278,7 +291,7 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const collectorId = req.query.collectorId || req.body.collectorId || null; // can be null for general reports
+      const collectorId = req.query.collectorId || req.body.collectorId || null;
 
       const saved = await FileModel.create({
         originalName: req.file.originalname,
@@ -286,7 +299,7 @@ app.post(
         path: `/uploads/reports/${req.file.filename}`,
         size: req.file.size,
         type: "reports",
-        collectorId, // store if targeted
+        collectorId,
       });
       res.json({ ok: true, file: saved });
     } catch (e) {
@@ -295,7 +308,6 @@ app.post(
   }
 );
 
-// GET /api/reports/files?role=collector&collectorId=collector-3
 app.get("/api/reports/files", async (req, res) => {
   try {
     const role = String(req.query.role || "").toLowerCase();
@@ -304,7 +316,6 @@ app.get("/api/reports/files", async (req, res) => {
     const q = { type: "reports" };
     if (role === "collector") {
       if (!collectorId) return res.json([]);
-      // show only targeted reports or global ones (collectorId null) — adjust as you prefer
       q.$or = [{ collectorId: collectorId }, { collectorId: null }];
     } else if (collectorId) {
       q.collectorId = collectorId;
@@ -336,7 +347,7 @@ app.get("/", (_req, res) => sendHtml(res, "dashboard.html"));
 app.get("/:page", (req, res, next) => {
   const file = req.params.page.endsWith(".html") ? req.params.page : `${req.params.page}.html`;
   const candidate = path.join(FRONTEND_DIR, file);
-  fs.access(candidate, fs.constants.FOK, (err) => {
+  fs.access(candidate, fs.constants.F_OK, (err) => {
     if (err) return next();
     return res.sendFile(candidate);
   });
@@ -354,3 +365,4 @@ app.listen(PORT, HOST, () => {
   console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
   console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
 });
+
