@@ -2,7 +2,7 @@
 import { apiFetch, getUser, attachLogout, displayDateMMDDYYYY } from "./auth.js";
 attachLogout();
 
-const me = getUser(); // { role, collectorId, ... }
+const me = getUser();
 
 const uploadInput = document.querySelector('#paymentsUploadInput') || document.querySelector('input[type="file"]');
 const uploadBtn   = document.querySelector('#paymentsUploadBtn')   || Array.from(document.querySelectorAll("button")).find(b=>/upload/i.test(b.textContent));
@@ -83,9 +83,9 @@ async function doUpload(){
   if (role==="team_leader") collectorId = normalizeCollectorId(whoEl?.value || "");
   else collectorId = me?.collectorId || "collector-1";
 
-  const url = collectorId
-    ? `/api/payments/upload?collectorId=${encodeURIComponent(collectorId)}`
-    : `/api/payments/upload`;
+  if (!collectorId) return alert("Select a collector");
+
+  const url = `/api/payments/upload?collectorId=${encodeURIComponent(collectorId)}`;
 
   const oldLabel = uploadBtn?.textContent || "Upload";
   if (uploadBtn){ uploadBtn.disabled = true; uploadBtn.textContent = "Uploading…"; }

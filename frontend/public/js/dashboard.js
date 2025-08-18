@@ -6,8 +6,7 @@ const me = getUser();
 
 const paidEl = document.querySelector('#dashTotalPaid');
 const balEl  = document.querySelector('#dashTotalBalance');
-
-const paidVsBalCanvas = document.getElementById("paidVsBalance"); // create <canvas id="paidVsBalance"></canvas> if not present
+const barCanvas = document.getElementById("paidVsBalance");
 
 async function loadStats(){
   const params = new URLSearchParams();
@@ -23,26 +22,16 @@ async function loadStats(){
   if (paidEl) paidEl.textContent = totalPaid.toLocaleString();
   if (balEl)  balEl.textContent  = totalBalance.toLocaleString();
 
-  // Draw chart if Chart.js available
-  if (paidVsBalCanvas && window.Chart){
-    const ctx = paidVsBalCanvas.getContext("2d");
-    if (window._paidVsBalChart) window._paidVsBalChart.destroy();
-    window._paidVsBalChart = new Chart(ctx, {
+  if (barCanvas && window.Chart){
+    const ctx = barCanvas.getContext("2d");
+    if (window._pvb) window._pvb.destroy();
+    window._pvb = new Chart(ctx, {
       type: "bar",
-      data: {
-        labels: ["Paid", "Outstanding"],
-        datasets: [{
-          label: "KES",
-          data: [totalPaid, totalBalance],
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: { y: { beginAtZero: true } }
-      }
+      data: { labels: ["Paid", "Outstanding"], datasets: [{ label:"KES", data:[totalPaid, totalBalance] }] },
+      options: { responsive: true, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
     });
   }
 }
 
 loadStats();
+
