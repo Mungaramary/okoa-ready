@@ -9,7 +9,7 @@ const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
-const tasksRouter = require("./routes/tasks"); // <-- lazy router
+const tasksRouter = require("./routes/tasks"); // lazy tasks router (works as-is)
 
 const app = express();
 
@@ -43,7 +43,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(FRONTEND_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// Mount Tasks router immediately (it will return 503 until DB is ready)
+// Mount Tasks router immediately (it returns 503 until DB is ready)
 app.use("/api", tasksRouter());
 
 if (!MONGODB_URI) {
@@ -61,8 +61,6 @@ mongoose
 const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
-
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- HEALTH ----------
 app.get("/api/health", async (_req, res) => {
@@ -124,10 +122,13 @@ function excelSerialToDate(n) {
 // ---------- PAYMENTS ----------
 app.get("/api/payments", async (req, res) => {
   try {
-    const { collectorId } = req.query;
+    const { collectorId, limit } = req.query;
     const q = {};
     if (collectorId) q.collectorId = collectorId;
-    const rows = await Payment.find(q).sort({ date: -1, createdAt: -1 }).limit(2000).lean();
+    const rows = await Payment.find(q)
+      .sort({ date: -1, createdAt: -1 })
+      .limit(Number(limit || 2000))
+      .lean();
     res.json(rows || []);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -205,7 +206,7 @@ app.post(
   }
 );
 
-// ---------- ACCOUNTS ----------
+// ---------- ACCOUNTS (scope by collector) ----------
 app.post(
   "/api/accounts/upload",
   (req, _res, next) => {
@@ -216,13 +217,16 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      // TL should pass ?collectorId=collector-1 (or body)
+      const collectorId = req.query.collectorId || req.body.collectorId || null;
+
       const saved = await FileModel.create({
         originalName: req.file.originalname,
         filename: req.file.filename,
         path: `/uploads/accounts/${req.file.filename}`,
         size: req.file.size,
         type: "accounts",
-        collectorId: null,
+        collectorId, // <-- now stored
       });
       res.json({ ok: true, file: saved });
     } catch (e) {
@@ -231,25 +235,39 @@ app.post(
   }
 );
 
-app.get("/api/accounts/files", async (_req, res) => {
+// GET /api/accounts/files?role=collector&collectorId=collector-3
+// TL can optionally filter with ?collectorId=...
+app.get("/api/accounts/files", async (req, res) => {
   try {
-    const files = await FileModel.find({ type: "accounts" }).sort({ createdAt: -1 }).limit(200).lean();
-    const out =
-      (files || []).map((f) => ({
-        name: f.originalName || f.filename,
-        filename: f.filename,
-        size: f.size,
-        createdAt: f.createdAt,
-        uploadedAt: f.createdAt,
-        url: f.path || `/uploads/accounts/${f.filename}`,
-      })) || [];
+    const role = String(req.query.role || "").toLowerCase();
+    const collectorId = req.query.collectorId || null;
+
+    const q = { type: "accounts" };
+    if (role === "collector") {
+      if (!collectorId) return res.json([]); // collectors must supply own id
+      q.collectorId = collectorId;
+    } else if (collectorId) {
+      // TL filter by chosen collector if provided
+      q.collectorId = collectorId;
+    }
+
+    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(200).lean();
+    const out = (files || []).map((f) => ({
+      name: f.originalName || f.filename,
+      filename: f.filename,
+      size: f.size,
+      createdAt: f.createdAt,
+      uploadedAt: f.createdAt,
+      url: f.path || `/uploads/accounts/${f.filename}`,
+      collectorId: f.collectorId || null,
+    }));
     res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// ---------- REPORTS ----------
+// ---------- REPORTS (optional per-collector scoping; same rule) ----------
 app.post(
   "/api/reports/upload",
   (req, _res, next) => {
@@ -260,13 +278,15 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const collectorId = req.query.collectorId || req.body.collectorId || null; // can be null for general reports
+
       const saved = await FileModel.create({
         originalName: req.file.originalname,
         filename: req.file.filename,
         path: `/uploads/reports/${req.file.filename}`,
         size: req.file.size,
         type: "reports",
-        collectorId: null,
+        collectorId, // store if targeted
       });
       res.json({ ok: true, file: saved });
     } catch (e) {
@@ -275,18 +295,31 @@ app.post(
   }
 );
 
-app.get("/api/reports/files", async (_req, res) => {
+// GET /api/reports/files?role=collector&collectorId=collector-3
+app.get("/api/reports/files", async (req, res) => {
   try {
-    const files = await FileModel.find({ type: "reports" }).sort({ createdAt: -1 }).limit(200).lean();
-    const out =
-      (files || []).map((f) => ({
-        name: f.originalName || f.filename,
-        filename: f.filename,
-        size: f.size,
-        createdAt: f.createdAt,
-        uploadedAt: f.createdAt,
-        url: f.path || `/uploads/reports/${f.filename}`,
-      })) || [];
+    const role = String(req.query.role || "").toLowerCase();
+    const collectorId = req.query.collectorId || null;
+
+    const q = { type: "reports" };
+    if (role === "collector") {
+      if (!collectorId) return res.json([]);
+      // show only targeted reports or global ones (collectorId null) — adjust as you prefer
+      q.$or = [{ collectorId: collectorId }, { collectorId: null }];
+    } else if (collectorId) {
+      q.collectorId = collectorId;
+    }
+
+    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(200).lean();
+    const out = (files || []).map((f) => ({
+      name: f.originalName || f.filename,
+      filename: f.filename,
+      size: f.size,
+      createdAt: f.createdAt,
+      uploadedAt: f.createdAt,
+      url: f.path || `/uploads/reports/${f.filename}`,
+      collectorId: f.collectorId || null,
+    }));
     res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -303,7 +336,7 @@ app.get("/", (_req, res) => sendHtml(res, "dashboard.html"));
 app.get("/:page", (req, res, next) => {
   const file = req.params.page.endsWith(".html") ? req.params.page : `${req.params.page}.html`;
   const candidate = path.join(FRONTEND_DIR, file);
-  fs.access(candidate, fs.constants.F_OK, (err) => {
+  fs.access(candidate, fs.constants.FOK, (err) => {
     if (err) return next();
     return res.sendFile(candidate);
   });
@@ -321,6 +354,3 @@ app.listen(PORT, HOST, () => {
   console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
   console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
 });
-
-
-
