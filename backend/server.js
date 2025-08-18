@@ -43,9 +43,10 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(FRONTEND_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-// Tasks API
+// Tasks API (unchanged behavior)
 app.use("/api", tasksRouter());
 
+// ---- Mongo ----
 if (!MONGODB_URI) {
   console.error("❌ No MONGODB_URI (or MONGO_URI) in environment");
   process.exit(1);
@@ -58,11 +59,12 @@ mongoose
     process.exit(1);
   });
 
+// ---- Models ----
 const Payment = require("./models/Payment");
 const FileModel = require("./models/File");
 const User = require("./models/users");
 
-// ---------- HEALTH ----------
+// ---- Health ----
 app.get("/api/health", async (_req, res) => {
   try {
     const state = mongoose.connection.readyState;
@@ -85,7 +87,7 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// ---------- USERS (collectors list) ----------
+// ---- Collectors list (unchanged) ----
 app.get("/api/users/collectors", async (_req, res) => {
   try {
     const existing = await User.find({ role: "collector" })
@@ -109,7 +111,7 @@ app.get("/api/users/collectors", async (_req, res) => {
   }
 });
 
-// ---------- Excel serial -> JS Date ----------
+// ---- Date helpers ----
 function excelSerialToDate(n) {
   if (typeof n !== "number" || !isFinite(n)) return null;
   const utcDays = Math.floor(n - 25569);
@@ -122,11 +124,49 @@ function coerceDate(val) {
   if (val == null || val === "") return null;
   if (typeof val === "number") return excelSerialToDate(val);
   if (val instanceof Date) return isNaN(val) ? null : val;
-  const tryD = new Date(String(val).replace(/-/g, "/")); // be lenient
+  const tryD = new Date(String(val).replace(/-/g, "/"));
   return isNaN(tryD) ? null : tryD;
 }
 
-// ---------- PAYMENTS ----------
+// ---- Strict header mapping for your sheet ----
+function normalizeHead(h) {
+  return String(h || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._-]+/g, "");
+}
+
+function buildHeaderMap(headerRow) {
+  const map = {};
+  const normToIdx = {};
+  headerRow.forEach((h, i) => {
+    normToIdx[normalizeHead(h)] = i;
+  });
+
+  // exact names + common synonyms
+  function idxOf(...candidates) {
+    for (const c of candidates) {
+      const k = normalizeHead(c);
+      if (normToIdx.hasOwnProperty(k)) return normToIdx[k];
+    }
+    return -1;
+  }
+
+  map.collector = idxOf("collector");
+  map.agent = idxOf("agent", "agentno", "agentnumber");
+  map.loan = idxOf("loanamount", "loan", "principal");
+  map.paid = idxOf("paid", "amountpaid", "payments", "collected");
+  map.balance = idxOf("balance", "outstanding", "outstandingbalance");
+  map.date = idxOf("date", "paymentdate", "reportdate");
+
+  return map;
+}
+
+function isTotalsRow(row) {
+  return row.some((cell) => String(cell || "").trim().toLowerCase() === "totals");
+}
+
+// -------- PAYMENTS: list (scoped) --------
 app.get("/api/payments", async (req, res) => {
   try {
     const { collectorId, limit } = req.query;
@@ -142,8 +182,7 @@ app.get("/api/payments", async (req, res) => {
   }
 });
 
-// Accepts sheets with headers like: Collector | Agent | Loan Amount | Paid | Balance | Date
-// Flexible header matching; fixes dates (serials & strings)
+// -------- PAYMENTS: upload (strict header map) --------
 app.post(
   "/api/payments/upload",
   (req, _res, next) => {
@@ -154,7 +193,7 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const collectorId = req.query.collectorId || req.body.collectorId || null;
+      const selectedCollectorId = req.query.collectorId || req.body.collectorId || null;
 
       const saved = await FileModel.create({
         originalName: req.file.originalname,
@@ -162,7 +201,7 @@ app.post(
         path: `/uploads/payments/${req.file.filename}`,
         size: req.file.size,
         type: "payments",
-        collectorId,
+        collectorId: selectedCollectorId,
       });
 
       const fullPath = path.join(UPLOAD_DIR, "payments", req.file.filename);
@@ -171,40 +210,48 @@ app.post(
       const ws = wb.Sheets[sheetName];
       const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
-      // Find header row (first non-empty row with >= 4 columns)
+      if (!data.length) return res.json({ ok: true, inserted: 0, file: saved });
+
+      // find first non-empty header row
       let headerRowIdx = 0;
-      while (headerRowIdx < data.length && (!data[headerRowIdx] || data[headerRowIdx].filter(Boolean).length < 4)) {
+      while (headerRowIdx < data.length && (!data[headerRowIdx] || data[headerRowIdx].filter(Boolean).length < 2)) {
         headerRowIdx++;
       }
-      const header = (data[headerRowIdx] || []).map(h => String(h || "").trim().toLowerCase());
+      const headerRow = data[headerRowIdx] || [];
+      const idx = buildHeaderMap(headerRow);
 
-      function findIdx(...keys) {
-        return header.findIndex(h => keys.some(k => h.includes(k)));
+      // minimal validation: agent + loan or paid must exist
+      if (idx.agent < 0 || (idx.loan < 0 && idx.paid < 0)) {
+        return res.status(400).json({
+          error:
+            "Header row not recognized. Expecting columns like: Collector | Agent | Loan Amount | Paid | Balance | Date",
+        });
       }
-
-      const idx = {
-        collector: findIdx("collector"),
-        agent: findIdx("agent"),
-        loan: findIdx("loan amount", "loan"),
-        paid: findIdx("paid", "amount paid"),
-        bal: findIdx("balance", "outstanding"),
-        date: findIdx("date"),
-      };
-
-      // If date still not found, assume last column is date
-      if (idx.date < 0 && header.length) idx.date = header.length - 1;
 
       const docs = [];
       for (let i = headerRowIdx + 1; i < data.length; i++) {
         const row = data[i] || [];
-        const agentNo = idx.agent >= 0 ? row[idx.agent] : row[0];
+        if (!row.length) continue;
+        if (isTotalsRow(row)) continue;
+
+        const collectorCell = idx.collector >= 0 ? row[idx.collector] : null;
+        const agentNo = idx.agent >= 0 ? row[idx.agent] : null;
         const loanAmount = Number(idx.loan >= 0 ? row[idx.loan] : 0) || 0;
         const amountPaid = Number(idx.paid >= 0 ? row[idx.paid] : 0) || 0;
-        const loanBalance = Number(idx.bal >= 0 ? row[idx.bal] : 0) || 0;
+        const loanBalance = Number(idx.balance >= 0 ? row[idx.balance] : 0) || 0;
         const dateVal = idx.date >= 0 ? row[idx.date] : null;
 
+        // choose collectorId: prefer the selected value, else a per-row value if present
+        const collectorId =
+          selectedCollectorId ||
+          (collectorCell ? String(collectorCell).trim().toLowerCase() : null) ||
+          null;
+
+        // basic row guard: must have agent or some numeric values
+        if (!agentNo && !loanAmount && !amountPaid && !loanBalance) continue;
+
         docs.push({
-          collectorId, // who this batch belongs to
+          collectorId,
           agentNo,
           loanAmount,
           amountPaid,
@@ -218,12 +265,12 @@ app.post(
 
       res.json({ ok: true, inserted: docs.length, file: saved });
     } catch (e) {
-      res.status(500).json({ error: e.message || "Failed to parse file" });
+      res.status(500).json({ error: e.message || "Failed to parse payments file" });
     }
   }
 );
 
-// ---------- ACCOUNTS (scoped) ----------
+// -------- ACCOUNTS (scoped, unchanged except scoping) --------
 app.post(
   "/api/accounts/upload",
   (req, _res, next) => {
@@ -280,7 +327,7 @@ app.get("/api/accounts/files", async (req, res) => {
   }
 });
 
-// ---------- REPORTS (optional scoped like accounts) ----------
+// -------- REPORTS (scoped like before) --------
 app.post(
   "/api/reports/upload",
   (req, _res, next) => {
@@ -337,7 +384,7 @@ app.get("/api/reports/files", async (req, res) => {
   }
 });
 
-// ---------- HTML routing ----------
+// ---- HTML routing ----
 function sendHtml(res, file) {
   const full = path.join(FRONTEND_DIR, file);
   if (fs.existsSync(full)) return res.sendFile(full);
@@ -359,7 +406,6 @@ app.get(["/index", "/index.html"], (_req, res) => {
 });
 app.use((_req, res) => res.status(404).send("Page not found"));
 
-// Start server
 app.listen(PORT, HOST, () => {
   console.log(`🚀 Server at http://${HOST}:${PORT}`);
   console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);

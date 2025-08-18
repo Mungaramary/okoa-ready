@@ -2,7 +2,7 @@
 import { apiFetch, getUser, attachLogout, displayDateMMDDYYYY } from "./auth.js";
 attachLogout();
 
-const me = getUser(); // { role, collectorId, name, ... }
+const me = getUser(); // { role, collectorId, ... }
 
 const uploadInput = document.querySelector('#paymentsUploadInput') || document.querySelector('input[type="file"]');
 const uploadBtn   = document.querySelector('#paymentsUploadBtn')   || Array.from(document.querySelectorAll("button")).find(b=>/upload/i.test(b.textContent));
@@ -15,7 +15,7 @@ function normalizeCollectorId(x) {
   if (/collector\s*1/.test(v)) return "collector-1";
   if (/collector\s*2/.test(v)) return "collector-2";
   if (/collector\s*3/.test(v)) return "collector-3";
-  if (/^collector-\d+/.test(v)) return v;
+  if (/^collector-\d+$/.test(v)) return v;
   return v;
 }
 
@@ -23,7 +23,6 @@ function normalizeCollectorId(x) {
   if (!whoEl) return;
   const role = (me?.role||"").toLowerCase();
   if (role==="team_leader"){
-    // keep your existing labels
     whoEl.innerHTML = `
       <option value="collector-1">Collector 1</option>
       <option value="collector-2">Collector 2</option>
@@ -88,22 +87,20 @@ async function doUpload(){
     ? `/api/payments/upload?collectorId=${encodeURIComponent(collectorId)}`
     : `/api/payments/upload`;
 
-  uploadBtn.disabled = true;
-  const oldLabel = uploadBtn.textContent;
-  uploadBtn.textContent = "Uploading…";
+  const oldLabel = uploadBtn?.textContent || "Upload";
+  if (uploadBtn){ uploadBtn.disabled = true; uploadBtn.textContent = "Uploading…"; }
 
   const r = await apiFetch(url, { method:"POST", body: fd });
   const j = await r.json().catch(()=>({}));
-  uploadBtn.disabled = false;
+  if (uploadBtn){ uploadBtn.disabled = false; }
 
   if (!r.ok || !j.ok) {
-    uploadBtn.textContent = oldLabel;
+    if (uploadBtn) uploadBtn.textContent = oldLabel;
     return alert(j.error || "Upload failed");
   }
 
-  uploadInput.value = "";
-  uploadBtn.textContent = "Uploaded";
-  setTimeout(()=> uploadBtn.textContent = oldLabel, 1200);
+  if (uploadInput) uploadInput.value = "";
+  if (uploadBtn){ uploadBtn.textContent = "Uploaded"; setTimeout(()=> uploadBtn.textContent = oldLabel, 1200); }
   await loadPayments();
 }
 
@@ -114,4 +111,5 @@ if (uploadBtn && !uploadBtn._bound){
 }
 
 loadPayments();
+
 
