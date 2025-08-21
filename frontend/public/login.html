@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Okoa Float — Sign In</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .panel { max-width: 520px; margin: 10vh auto; padding: 28px; border: 1px solid #eee; border-radius: 12px; }
+    .row { display:flex; gap:10px; align-items:center; margin-top:12px; }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .logo { width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:#ff9800; color:#fff; font-weight:700; }
+    .title { font-weight:700; font-size:18px; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="brand"><div class="logo">OF</div><div class="title">Okoa Float — Sign In</div></div>
+    <div class="row">
+      <label for="role">I’m:</label>
+      <select id="role" class="input" style="flex:1;">
+        <option value="tl">Team Leader</option>
+        <option value="collector-1">Collector 1</option>
+        <option value="collector-2">Collector 2</option>
+        <option value="collector-3">Collector 3</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="go" class="btn" style="flex:1;">Continue</button>
+    </div>
+    <p class="muted">Tip: press <b>Enter</b> to continue.</p>
+  </div>
+
+  <script type="module">
+    const role = document.getElementById('role');
+    const go = document.getElementById('go');
+    function enter() {
+      const me = (role.value || "").trim().toLowerCase();
+      if (!me) return;
+      localStorage.setItem('me', me);
+      window.location.href = "/dashboard.html";  // or accounts.html/tasks.html if you prefer
+    }
+    go.addEventListener('click', enter);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Enter') enter(); });
+  </script>
+</body>
+</html>
