@@ -1,14 +1,16 @@
-
+// backend/models/File.js
 const mongoose = require("mongoose");
-const FileSchema = new mongoose.Schema(
+
+const fileSchema = new mongoose.Schema(
   {
     originalName: { type: String },
     filename: { type: String, required: true },
     path: { type: String, required: true },
     size: { type: Number, default: 0 },
-    type: { type: String, default: "misc", index: true },
-    collectorId: { type: mongoose.Schema.Types.Mixed, index: true }
+    type: { type: String, index: true, required: true }, // 'accounts' | 'payments' | 'reports'
+    collectorId: { type: String, index: true, default: null }, // <- IMPORTANT
   },
   { timestamps: true }
 );
-module.exports = mongoose.model("File", FileSchema);
+
+module.exports = mongoose.model("File", fileSchema);
