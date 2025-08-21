@@ -1,114 +1,115 @@
 // frontend/public/js/payments.js
-// Keeps your existing UI. Adds robust collectorId handling + date formatting.
-
-import { apiFetch, getUser, displayDateMMDDYYYY, attachLogout } from "./auth.js";
-
+import { apiFetch, getUser, attachLogout, displayDateMMDDYYYY } from "./auth.js";
 attachLogout();
 
 const me = getUser();
-const tbody = document.querySelector("#paymentsTable tbody");
-const uploadCard = document.getElementById("payUploadCard");   // hidden for collectors
-const statusEl = document.getElementById("payUploadStatus");
 
-// Hide Team Leader upload section for collectors (keeps your behavior)
-if (me.role !== "team_leader" && uploadCard) uploadCard.style.display = "none";
+const uploadInput = document.querySelector('#paymentsUploadInput') || document.querySelector('input[type="file"]');
+const uploadBtn   = document.querySelector('#paymentsUploadBtn')   || Array.from(document.querySelectorAll("button")).find(b=>/upload/i.test(b.textContent));
+const whoEl       = document.querySelector('#paymentsAssignee')    || document.querySelector('select#paymentsAssignee');
+const tableBody   = document.querySelector('#paymentsTbody')       || document.querySelector('tbody');
 
-// ---- Excel serial date -> JS Date ----
-function excelDateToJS(serial) {
-  if (typeof serial !== "number" || !isFinite(serial)) return null;
-  const utcDays = Math.floor(serial - 25569);
-  const frac = serial - Math.floor(serial);
-  const utcSeconds = utcDays * 86400 + Math.round(frac * 86400);
-  const d = new Date(utcSeconds * 1000);
-  return isNaN(d) ? null : d;
+function normalizeCollectorId(x) {
+  if (!x) return "";
+  const v = String(x).toLowerCase().trim();
+  if (/collector\s*1/.test(v)) return "collector-1";
+  if (/collector\s*2/.test(v)) return "collector-2";
+  if (/collector\s*3/.test(v)) return "collector-3";
+  if (/^collector-\d+$/.test(v)) return v;
+  return v;
 }
-function prettyDate(v) {
-  if (!v) return "";
-  if (typeof v === "number") {
-    const d = excelDateToJS(v);
-    if (d) return displayDateMMDDYYYY(d);
+
+(function initAssignee(){
+  if (!whoEl) return;
+  const role = (me?.role||"").toLowerCase();
+  if (role==="team_leader"){
+    whoEl.innerHTML = `
+      <option value="collector-1">Collector 1</option>
+      <option value="collector-2">Collector 2</option>
+      <option value="collector-3">Collector 3</option>
+    `;
+  } else {
+    const mine = me?.collectorId || "collector-1";
+    whoEl.innerHTML = `<option value="${mine}">Me</option>`;
+    whoEl.disabled = true;
   }
-  const d = new Date(v);
-  return isNaN(d) ? String(v) : displayDateMMDDYYYY(d);
+})();
+
+function fmtNum(n){ const v = Number(n||0); return isFinite(v) ? v.toLocaleString() : String(n||""); }
+
+async function loadPayments(){
+  const params = new URLSearchParams();
+  const role = (me?.role||"").toLowerCase();
+
+  if (role==="collector" && me?.collectorId) {
+    params.set("collectorId", me.collectorId);
+  } else if (role==="team_leader" && whoEl?.value){
+    params.set("collectorId", normalizeCollectorId(whoEl.value));
+  }
+
+  const r = await apiFetch(`/api/payments?${params.toString()}`);
+  const rows = await r.json().catch(()=>[]);
+  render(rows);
 }
 
-// ---- Load table (same behavior; collectors filtered by their id) ----
-async function load() {
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td class="muted" colspan="6">Loading…</td></tr>`;
-
-  const qs = new URLSearchParams();
-  if (me.role === "collector" && me.id) qs.set("collectorId", me.id);
-
-  try {
-    const r = await apiFetch(`/api/payments?${qs.toString()}`);
-    let rows = await r.json();
-
-    // De-dup (collector|agent|date) to avoid duplicates on display
-    const seen = new Map();
-    const out = [];
-    for (const p of rows || []) {
-      const dateKey = new Date(p.date || p.createdAt || 0).toDateString();
-      const key = `${p.collectorId || ""}|${p.agentNo || p.agent || ""}|${dateKey}`;
-      if (!seen.has(key)) { seen.set(key, 1); out.push(p); }
-    }
-    rows = out;
-
-    tbody.innerHTML = (rows || []).length ? rows.slice(0, 500).map(p => `
+function render(rows){
+  if (!tableBody) return;
+  if (!Array.isArray(rows) || !rows.length){
+    tableBody.innerHTML = `<tr><td colspan="6" class="muted">No payments</td></tr>`;
+    return;
+  }
+  tableBody.innerHTML = rows.map(p=>{
+    const d = p.date ? displayDateMMDDYYYY(new Date(p.date)) : "-";
+    return `
       <tr>
-        <td>${p.collectorId || ""}</td>
-        <td>${p.agentNo || p.agent || ""}</td>
-        <td>${Number(p.loanAmount || 0).toLocaleString()}</td>
-        <td>${Number(p.amountPaid || p.paid || 0).toLocaleString()}</td>
-        <td>${Number(p.loanBalance || p.balance || 0).toLocaleString()}</td>
-        <td>${prettyDate(p.date || p.createdAt)}</td>
+        <td>${p.collectorId || "-"}</td>
+        <td>${p.agentNo ?? ""}</td>
+        <td>${fmtNum(p.loanAmount)}</td>
+        <td>${fmtNum(p.amountPaid)}</td>
+        <td>${fmtNum(p.loanBalance)}</td>
+        <td>${d}</td>
       </tr>
-    `).join("") : `<tr><td class="muted" colspan="6">No payments yet</td></tr>`;
-  } catch {
-    tbody.innerHTML = `<tr><td class="muted" colspan="6">Failed to load</td></tr>`;
-  }
+    `;
+  }).join("");
 }
 
-// ---- Upload handler (no UI change; normalizes collectorId) ----
-document.getElementById("payUploadBtn")?.addEventListener("click", async () => {
-  const fileInput = document.getElementById("payFile");
-  const f = fileInput?.files?.[0];
-  if (!f) { if (statusEl) statusEl.textContent = "Choose a file first"; return; }
-
-  // Support your existing select id/name. We won't change your HTML:
-  // Try commonly used ids, then any <select> as a last resort.
-  const sel =
-    document.getElementById("collectorSelect") ||
-    document.getElementById("payCollector") ||
-    document.querySelector("select");
-
-  // Normalize to "collector-<n>" without altering your UI/labels.
-  let cid =
-    sel?.value ||
-    sel?.selectedOptions?.[0]?.value ||
-    sel?.selectedOptions?.[0]?.textContent || "";
-
-  if (!/^collector-\d+$/i.test(String(cid))) {
-    const n = String(cid).match(/\d+/);
-    if (n) cid = `collector-${n[0]}`;
-  }
-  cid = String(cid || "").toLowerCase();
-
-  if (statusEl) statusEl.textContent = "Uploading…";
+async function doUpload(){
+  if (!uploadInput?.files?.length) return alert("Choose a file first");
   const fd = new FormData();
-  fd.append("file", f);
+  fd.append("file", uploadInput.files[0]);
 
-  try {
-    const url = `/api/payments/upload?${cid ? `collectorId=${encodeURIComponent(cid)}` : ""}`;
-    const r = await apiFetch(url, { method: "POST", body: fd });
-    const j = await r.json().catch(() => ({}));
-    if (statusEl) statusEl.textContent = r.ok ? `Uploaded (${j.inserted || j.count || 0} rows)` : (j.error || "Failed");
-    await load();
-  } catch {
-    if (statusEl) statusEl.textContent = "Failed";
+  const role = (me?.role||"").toLowerCase();
+  let collectorId = "";
+  if (role==="team_leader") collectorId = normalizeCollectorId(whoEl?.value || "");
+  else collectorId = me?.collectorId || "collector-1";
+
+  if (!collectorId) return alert("Select a collector");
+
+  const url = `/api/payments/upload?collectorId=${encodeURIComponent(collectorId)}`;
+
+  const oldLabel = uploadBtn?.textContent || "Upload";
+  if (uploadBtn){ uploadBtn.disabled = true; uploadBtn.textContent = "Uploading…"; }
+
+  const r = await apiFetch(url, { method:"POST", body: fd });
+  const j = await r.json().catch(()=>({}));
+  if (uploadBtn){ uploadBtn.disabled = false; }
+
+  if (!r.ok || !j.ok) {
+    if (uploadBtn) uploadBtn.textContent = oldLabel;
+    return alert(j.error || "Upload failed");
   }
-});
 
-// initial & periodic refresh (unchanged behavior)
-await load();
-setInterval(load, 20000);
+  if (uploadInput) uploadInput.value = "";
+  if (uploadBtn){ uploadBtn.textContent = "Uploaded"; setTimeout(()=> uploadBtn.textContent = oldLabel, 1200); }
+  await loadPayments();
+}
+
+if (whoEl) whoEl.addEventListener("change", ()=> loadPayments());
+if (uploadBtn && !uploadBtn._bound){
+  uploadBtn._bound = true;
+  uploadBtn.addEventListener("click",(e)=>{ e.preventDefault(); doUpload(); });
+}
+
+loadPayments();
+
+

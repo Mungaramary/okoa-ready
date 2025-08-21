@@ -1,20 +1,28 @@
 // backend/routes/tasks.js
-// CommonJS router that plugs into your existing Express + MongoDB app.
+// Router is self-contained (no db argument). It uses mongoose.connection.db
+// lazily inside each handler so routes exist immediately and start working
+// as soon as Mongo is connected.
 
 const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const { ObjectId } = require("mongodb");
+const mongoose = require("mongoose");
 
-// Ensure uploads directory for task attachments exists
+// Ensure uploads dir for task attachments exists
 const uploadsDir = path.join(__dirname, "..", "uploads", "tasks");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-// Multer for (optional) task attachments
 const upload = multer({ dest: uploadsDir });
 
-// Normalize collector ids (e.g. "Collector 2" -> "collector-2")
+function getTasksCollection() {
+  const db = mongoose.connection?.db;
+  if (!db) return null;
+  return db.collection("tasks");
+}
+
+// Normalize collector ids (e.g. "Collector 2" → "collector-2")
 function normalizeCollectorId(x) {
   if (!x) return "";
   const v = String(x).toLowerCase().trim();
@@ -25,19 +33,23 @@ function normalizeCollectorId(x) {
   return v;
 }
 
-/**
- * Export a factory so we can pass in the connected Mongo DB.
- * Usage in server.js:
- *   const tasksRouter = require('./routes/tasks');
- *   app.use('/api', tasksRouter(db));
- */
-module.exports = function tasksRouter(db) {
+// ISO date helper
+function toDateSafe(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val)) return val;
+  const d = new Date(val);
+  return isNaN(d) ? null : d;
+}
+
+module.exports = function tasksRouter() {
   const router = express.Router();
-  const Tasks = db.collection("tasks");
 
   // GET /api/tasks?role=team_leader|collector&collectorId=collector-1&me=TLName
   router.get("/tasks", async (req, res) => {
     try {
+      const Tasks = getTasksCollection();
+      if (!Tasks) return res.status(503).json({ error: "DB not ready" });
+
       const role = String(req.query.role || "").toLowerCase();
       const collectorId = normalizeCollectorId(req.query.collectorId || "");
       const me = req.query.me || null;
@@ -46,14 +58,13 @@ module.exports = function tasksRouter(db) {
       if (role === "collector" && collectorId) {
         filter = { assignedTo: collectorId };
       } else if (role === "team_leader") {
-        // Optionally filter by who created them (so TL sees their own)
         if (me) filter = { createdBy: me };
       }
 
       const items = await Tasks.find(filter).sort({ createdAt: -1 }).toArray();
       res.json(items);
     } catch (e) {
-      console.error("GET /api/tasks failed", e);
+      console.error("GET /api/tasks failed:", e);
       res.status(500).json({ error: "Failed to load tasks" });
     }
   });
@@ -61,36 +72,42 @@ module.exports = function tasksRouter(db) {
   // POST /api/tasks  { title, description, assignedTo, dueDate, createdBy, createdByName }
   router.post("/tasks", express.json(), async (req, res) => {
     try {
+      const Tasks = getTasksCollection();
+      if (!Tasks) return res.status(503).json({ error: "DB not ready" });
+
       const b = req.body || {};
       const title = (b.title || "").trim();
       if (!title) return res.status(400).json({ error: "Missing title" });
 
-      const assignedTo = normalizeCollectorId(b.assignedTo || "");
-      if (!assignedTo) return res.status(400).json({ error: "Missing assignedTo" });
+      let assignedTo = normalizeCollectorId(b.assignedTo || "");
+      if (!assignedTo) assignedTo = "collector-1";
 
       const doc = {
         title,
         description: String(b.description || "").trim(),
         assignedTo,
-        dueDate: b.dueDate ? new Date(b.dueDate) : null,
+        dueDate: toDateSafe(b.dueDate),
         status: "Open",
         createdAt: new Date(),
         createdBy: b.createdBy || null,
         createdByName: b.createdByName || null,
-        attachments: [], // { name, path, size, uploadedAt }
+        attachments: [],
       };
 
       const r = await Tasks.insertOne(doc);
-      res.json({ ok: true, id: r.insertedId, task: { _id: r.insertedId, ...doc } });
+      return res.json({ ok: true, id: r.insertedId, task: { _id: r.insertedId, ...doc } });
     } catch (e) {
-      console.error("POST /api/tasks failed", e);
-      res.status(500).json({ error: "Failed to create task" });
+      console.error("POST /api/tasks failed:", e);
+      res.status(500).json({ error: e.message || "Failed to create task" });
     }
   });
 
   // PATCH /api/tasks/:id/status  { status: "Open" | "Done" }
   router.patch("/tasks/:id/status", express.json(), async (req, res) => {
     try {
+      const Tasks = getTasksCollection();
+      if (!Tasks) return res.status(503).json({ error: "DB not ready" });
+
       const { id } = req.params;
       const { status } = req.body || {};
       if (!["Open", "Done"].includes(status)) {
@@ -100,7 +117,7 @@ module.exports = function tasksRouter(db) {
       if (!r.matchedCount) return res.status(404).json({ error: "Task not found" });
       res.json({ ok: true });
     } catch (e) {
-      console.error("PATCH /api/tasks/:id/status failed", e);
+      console.error("PATCH /api/tasks/:id/status failed:", e);
       res.status(500).json({ error: "Failed to update status" });
     }
   });
@@ -108,10 +125,12 @@ module.exports = function tasksRouter(db) {
   // POST /api/tasks/:id/attach  (FormData: file)
   router.post("/tasks/:id/attach", upload.single("file"), async (req, res) => {
     try {
+      const Tasks = getTasksCollection();
+      if (!Tasks) return res.status(503).json({ error: "DB not ready" });
+
       const { id } = req.params;
       if (!req.file) return res.status(400).json({ error: "No file" });
 
-      // Public path is under /uploads/tasks/<filename>
       const file = {
         name: req.file.originalname,
         path: `/uploads/tasks/${req.file.filename}`,
@@ -124,10 +143,12 @@ module.exports = function tasksRouter(db) {
 
       res.json({ ok: true, file });
     } catch (e) {
-      console.error("POST /api/tasks/:id/attach failed", e);
+      console.error("POST /api/tasks/:id/attach failed:", e);
       res.status(500).json({ error: "Failed to upload attachment" });
     }
   });
 
   return router;
 };
+
+
