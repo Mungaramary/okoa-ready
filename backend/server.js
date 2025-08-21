@@ -1,6 +1,5 @@
 // backend/server.js
 require("dotenv").config();
-
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
@@ -9,27 +8,37 @@ const multer = require("multer");
 const fs = require("fs");
 const XLSX = require("xlsx");
 
-const tasksRouter = require("./routes/tasks");
+// Models
+const Payment = require("./models/Payment");
+const FileModel = require("./models/File");
+const User = require("./models/users");
+const Task = require("./models/Task");
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+/* =========================
+   ENV + PATHS
+   ========================= */
+const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
 const FRONTEND_DIR = path.join(__dirname, "..", "frontend", "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 function ensureSubdir(type) {
   const dir = path.join(UPLOAD_DIR, type);
-  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
+/* =========================
+   MULTER STORAGE
+   ========================= */
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => cb(null, ensureSubdir(req.uploadType || "misc")),
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     const ts = Date.now();
     const safe = (file.originalname || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
     cb(null, `${ts}_${safe}`);
@@ -37,44 +46,64 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+/* =========================
+   APP MIDDLEWARE
+   ========================= */
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(FRONTEND_DIR));
-app.use("/uploads", express.static(UPLOAD_DIR));
+app.use("/uploads", express.static(UPLOAD_DIR));          // serve uploaded files
+app.use(express.static(FRONTEND_DIR));                    // serve frontend assets
 
-// Tasks API (unchanged)
-app.use("/api", tasksRouter());
+/* =========================
+   HELPERS
+   ========================= */
+function excelSerialToDate(n) {
+  const num = Number(n);
+  if (!isFinite(num)) return null;
+  const epoch = new Date(Date.UTC(1899, 11, 30));
+  const d = new Date(epoch.getTime() + num * 86400000);
+  return isNaN(d) ? null : d;
+}
+function normCollectorId(v) {
+  if (!v) return "";
+  v = String(v).trim().toLowerCase();
+  if (/^collector\s*-?\s*1$/.test(v)) return "collector-1";
+  if (/^collector\s*-?\s*2$/.test(v)) return "collector-2";
+  if (/^collector\s*-?\s*3$/.test(v)) return "collector-3";
+  if (/^collector-\d+$/.test(v)) return v;
+  return v;
+}
+function norm(v) {
+  return String(v || "").trim().toLowerCase();
+}
 
-// --- Mongo ---
+/* =========================
+   DB CONNECT
+   ========================= */
 if (!MONGODB_URI) {
-  console.error("❌ No MONGODB_URI (or MONGO_URI) in environment");
+  console.error("❌ No MONGODB_URI (or MONGO_URI) in .env");
   process.exit(1);
 }
 mongoose
   .connect(MONGODB_URI)
   .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1);
-  });
+  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-// --- Models ---
-const Payment = require("./models/Payment");
-const FileModel = require("./models/File");
-const User = require("./models/users");
+/* =========================================================
+   ALL /api ROUTES (keep these ABOVE the static page routes)
+   ========================================================= */
 
-// --- Health ---
+// ---- HEALTH & USERS ----
 app.get("/api/health", async (_req, res) => {
   try {
-    const state = mongoose.connection.readyState;
     const [payments, files] = await Promise.all([
       Payment.countDocuments().catch(() => -1),
       FileModel.countDocuments().catch(() => -1),
     ]);
     res.json({
-      ok: state === 1,
-      mongooseState: state,
+      ok: mongoose.connection.readyState === 1,
+      mongooseState: mongoose.connection.readyState,
       db: mongoose.connection.name,
       host: mongoose.connection.host,
       counts: { payments, files },
@@ -87,7 +116,6 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// --- Collectors list ---
 app.get("/api/users/collectors", async (_req, res) => {
   try {
     const existing = await User.find({ role: "collector" })
@@ -100,194 +128,121 @@ app.get("/api/users/collectors", async (_req, res) => {
       { id: "collector-2", name: "Collector 2" },
       { id: "collector-3", name: "Collector 3" },
     ];
-
-    const list = existing?.length
-      ? existing.map((u) => ({ id: String(u._id), name: u.name }))
-      : fallback;
-
+    const list =
+      existing?.length > 0
+        ? existing.map((u) => ({ id: String(u._id), name: u.name }))
+        : fallback;
     res.json(list);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// --- Date helpers ---
-function excelSerialToDate(n) {
-  if (typeof n !== "number" || !isFinite(n)) return null;
-  const utcDays = Math.floor(n - 25569);
-  const frac = n - Math.floor(n);
-  const utcSeconds = utcDays * 86400 + Math.round(frac * 86400);
-  const d = new Date(utcSeconds * 1000);
-  return isNaN(d) ? null : d;
-}
-function coerceDate(val) {
-  if (val == null || val === "") return null;
-  if (typeof val === "number") return excelSerialToDate(val);
-  if (val instanceof Date) return isNaN(val) ? null : val;
-  const tryD = new Date(String(val).replace(/-/g, "/"));
-  return isNaN(tryD) ? null : tryD;
-}
-function isTotalsRow(row) {
-  return row.some((cell) => String(cell || "").trim().toLowerCase() === "totals");
-}
-
-// --- Strict header mapping ---
-function normalizeHead(h) {
-  return String(h || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s._-]+/g, "");
-}
-function headerMap(headerRow) {
-  const normToIdx = {};
-  headerRow.forEach((h, i) => (normToIdx[normalizeHead(h)] = i));
-  const idxOf = (...cands) => {
-    for (const c of cands) {
-      const k = normalizeHead(c);
-      if (normToIdx.hasOwnProperty(k)) return normToIdx[k];
-    }
-    return -1;
-  };
-  return {
-    collector: idxOf("collector"),
-    agent: idxOf("agent", "agentno", "agentnumber"),
-    loan: idxOf("loanamount", "loan", "principal"),
-    paid: idxOf("paid", "amountpaid", "payments", "collected"),
-    balance: idxOf("balance", "outstanding", "outstandingbalance"),
-    date: idxOf("date", "paymentdate", "reportdate"),
-  };
-}
-
-// --- PAYMENTS list (scoped) ---
+// ---- PAYMENTS ----
 app.get("/api/payments", async (req, res) => {
   try {
-    const { collectorId, limit } = req.query;
     const q = {};
-    if (collectorId) q.collectorId = collectorId;
-    const rows = await Payment.find(q)
-      .sort({ date: -1, createdAt: -1 })
-      .limit(Number(limit || 2000))
-      .lean();
+    if (req.query.collectorId) q.collectorId = String(req.query.collectorId).trim().toLowerCase();
+    const rows = await Payment.find(q).sort({ date: -1, createdAt: -1 }).limit(2000).lean();
     res.json(rows || []);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// --- PAYMENTS upload (STRICT) ---
 app.post(
   "/api/payments/upload",
-  (req, _res, next) => {
-    req.uploadType = "payments";
-    next();
-  },
+  (req, _res, next) => { req.uploadType = "payments"; next(); },
   upload.single("file"),
   async (req, res) => {
     try {
+      const collectorId = normCollectorId(req.body.collectorId || req.query.collectorId || "");
+      if (!collectorId) return res.status(400).json({ error: "Select a target collector." });
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-      // Require target collector so we never mix it up
-      const selectedCollectorId =
-        (req.query.collectorId || req.body.collectorId || "").toString().trim().toLowerCase();
-      if (!selectedCollectorId) {
-        return res.status(400).json({ error: "Select a target collector." });
-      }
-
-      const saved = await FileModel.create({
+      await FileModel.create({
         originalName: req.file.originalname,
         filename: req.file.filename,
         path: `/uploads/payments/${req.file.filename}`,
         size: req.file.size,
         type: "payments",
-        collectorId: selectedCollectorId,
+        collectorId,
       });
 
       const fullPath = path.join(UPLOAD_DIR, "payments", req.file.filename);
       const wb = XLSX.readFile(fullPath);
-      const sheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
+      const ws = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
-      if (!data.length) return res.json({ ok: true, inserted: 0, file: saved });
-
-      // Find header row
-      let headerRowIdx = 0;
-      while (
-        headerRowIdx < data.length &&
-        (!data[headerRowIdx] || data[headerRowIdx].filter(Boolean).length < 2)
-      ) {
-        headerRowIdx++;
-      }
-      const headerRow = data[headerRowIdx] || [];
-      let idx = headerMap(headerRow);
-
-      // If headers are missing, fall back to the exact order:
-      // Collector | Agent | Loan Amount | Paid | Balance | Date
-      const useFixed =
-        idx.agent < 0 || (idx.loan < 0 && idx.paid < 0) || idx.balance < 0;
-      if (useFixed) {
-        idx = { collector: 0, agent: 1, loan: 2, paid: 3, balance: 4, date: 5 };
-        headerRowIdx = -1; // read from first row
-      }
+      const header = data[0] || [];
+      const nameToIdx = {};
+      header.forEach((h, i) => (nameToIdx[String(h || "").trim().toLowerCase()] = i));
+      const idx = {
+        agent: nameToIdx["agent"] ?? 0,
+        loan: nameToIdx["loan amount"] ?? 1,
+        paid: nameToIdx["paid"] ?? 2,
+        bal: nameToIdx["balance"] ?? 3,
+        date: nameToIdx["date"] ?? 4,
+      };
 
       const docs = [];
-      for (let i = headerRowIdx + 1; i < data.length; i++) {
-        const row = data[i] || [];
+      for (let r = 1; r < data.length; r++) {
+        const row = data[r] || [];
         if (!row.length) continue;
-        if (isTotalsRow(row)) continue;
+        if (row.some((c) => String(c || "").trim().toLowerCase() === "totals")) continue;
 
-        const agentNo = idx.agent >= 0 ? row[idx.agent] : null;
-        const loanAmount = Number(idx.loan >= 0 ? row[idx.loan] : 0) || 0;
-        const amountPaid = Number(idx.paid >= 0 ? row[idx.paid] : 0) || 0;
-        const loanBalance = Number(idx.balance >= 0 ? row[idx.balance] : 0) || 0;
-        const dateVal = idx.date >= 0 ? row[idx.date] : null;
+        const agentNo = row[idx.agent];
+        const loanAmount = Number(row[idx.loan] || 0);
+        const amountPaid = Number(row[idx.paid] || 0);
+        const loanBalance = Number(row[idx.bal] || 0);
 
-        // Row validity: must have an agent or any numeric values
+        let date = null;
+        const rawDate = row[idx.date];
+        if (typeof rawDate === "number") date = excelSerialToDate(rawDate);
+        else if (rawDate) {
+          const d = new Date(rawDate);
+          if (!isNaN(d)) date = d;
+        }
+
         if (!agentNo && !loanAmount && !amountPaid && !loanBalance) continue;
 
         docs.push({
-          collectorId: selectedCollectorId, // always the dropdown/logged-in collector
+          collectorId,
           agentNo,
           loanAmount,
           amountPaid,
           loanBalance,
-          date: coerceDate(dateVal) || null,
+          date,
           createdAt: new Date(),
         });
       }
 
       if (docs.length) await Payment.insertMany(docs);
-
-      res.json({ ok: true, inserted: docs.length, file: saved });
+      res.json({ ok: true, inserted: docs.length });
     } catch (e) {
-      res.status(500).json({ error: e.message || "Failed to parse payments file" });
+      res.status(500).json({ error: e.message });
     }
   }
 );
 
-// --- ACCOUNTS (scoped) ---
+// ---- ACCOUNTS (file records only) ----
 app.post(
   "/api/accounts/upload",
-  (req, _res, next) => {
-    req.uploadType = "accounts";
-    next();
-  },
+  (req, _res, next) => { req.uploadType = "accounts"; next(); },
   upload.single("file"),
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const collectorId = (req.query.collectorId || req.body.collectorId || "").toString().trim().toLowerCase();
-      if (!collectorId) return res.status(400).json({ error: "Select a target collector." });
-
-      const saved = await FileModel.create({
+      const collectorId = normCollectorId(req.body.collectorId || req.query.collectorId || "");
+      await FileModel.create({
         originalName: req.file.originalname,
         filename: req.file.filename,
         path: `/uploads/accounts/${req.file.filename}`,
         size: req.file.size,
         type: "accounts",
-        collectorId,
+        collectorId: collectorId || null,
       });
-      res.json({ ok: true, file: saved });
+      res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -296,46 +251,58 @@ app.post(
 
 app.get("/api/accounts/files", async (req, res) => {
   try {
-    const role = String(req.query.role || "").toLowerCase();
-    const collectorId = req.query.collectorId || null;
-
     const q = { type: "accounts" };
-    if (role === "collector") {
-      if (!collectorId) return res.json([]);
-      q.collectorId = collectorId;
-    } else if (collectorId) {
-      q.collectorId = collectorId;
-    }
-
-    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(200).lean();
-    const out = (files || []).map((f) => ({
-      name: f.originalName || f.filename,
-      filename: f.filename,
-      size: f.size,
-      createdAt: f.createdAt,
-      uploadedAt: f.createdAt,
-      url: f.path || `/uploads/accounts/${f.filename}`,
-      collectorId: f.collectorId || null,
-    }));
-    res.json(out);
+    if (req.query.collectorId) q.collectorId = String(req.query.collectorId).trim().toLowerCase();
+    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(500).lean();
+    res.json(
+      (files || []).map((f) => ({
+        _id: String(f._id),
+        name: f.originalName || f.filename,
+        filename: f.filename,
+        size: f.size,
+        uploadedAt: f.createdAt,
+        collectorId: f.collectorId || null,
+        url: f.path || `/uploads/accounts/${f.filename}`,
+      }))
+    );
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// --- REPORTS (scoped like before) ---
+app.delete("/api/accounts/file/:id", async (req, res) => {
+  try {
+    const _id = req.params.id;
+    const doc = await FileModel.findOne({ _id, type: "accounts" });
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    await FileModel.deleteOne({ _id });
+
+    const diskPath = path.join(UPLOAD_DIR, "accounts", path.basename(doc.filename || ""));
+    try { if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath); } catch (_) {}
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- REPORTS ----
 app.post(
   "/api/reports/upload",
-  (req, _res, next) => {
-    req.uploadType = "reports";
-    next();
-  },
+  (req, _res, next) => { req.uploadType = "reports"; next(); },
   upload.single("file"),
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const collectorId = (req.query.collectorId || req.body.collectorId || "").toString().trim().toLowerCase();
-      if (!collectorId) return res.status(400).json({ error: "Select a target collector." });
+
+      const me = String(req.query.me || req.body.me || "").trim().toLowerCase();
+      let collectorId = null;
+
+      if (me === "tl") {
+        collectorId = String(req.query.collectorId || req.body.collectorId || "")
+          .trim().toLowerCase() || null;
+      } else if (me.startsWith("collector-")) {
+        collectorId = me;
+      }
 
       const saved = await FileModel.create({
         originalName: req.file.originalname,
@@ -345,6 +312,7 @@ app.post(
         type: "reports",
         collectorId,
       });
+
       res.json({ ok: true, file: saved });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -354,26 +322,18 @@ app.post(
 
 app.get("/api/reports/files", async (req, res) => {
   try {
-    const role = String(req.query.role || "").toLowerCase();
-    const collectorId = req.query.collectorId || null;
-
+    const { collectorId } = req.query;
     const q = { type: "reports" };
-    if (role === "collector") {
-      if (!collectorId) return res.json([]);
-      q.$or = [{ collectorId: collectorId }, { collectorId: null }];
-    } else if (collectorId) {
-      q.collectorId = collectorId;
-    }
-
-    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(200).lean();
+    if (collectorId && collectorId !== "all") q.collectorId = String(collectorId);
+    const files = await FileModel.find(q).sort({ createdAt: -1 }).limit(500).lean();
     const out = (files || []).map((f) => ({
+      _id: String(f._id),
       name: f.originalName || f.filename,
       filename: f.filename,
       size: f.size,
       createdAt: f.createdAt,
-      uploadedAt: f.createdAt,
-      url: f.path || `/uploads/reports/${f.filename}`,
       collectorId: f.collectorId || null,
+      url: f.path || `/uploads/reports/${f.filename}`,
     }));
     res.json(out);
   } catch (e) {
@@ -381,30 +341,122 @@ app.get("/api/reports/files", async (req, res) => {
   }
 });
 
-// --- HTML routing ---
+app.delete("/api/reports/file/:id", async (req, res) => {
+  try {
+    const _id = req.params.id;
+    const doc = await FileModel.findOne({ _id, type: "reports" });
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    await FileModel.deleteOne({ _id });
+
+    const diskPath = path.join(UPLOAD_DIR, "reports", path.basename(doc.filename || ""));
+    try { if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath); } catch (_) {}
+
+    res.json({ ok: true, deleted: _id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- TASKS (INLINE CRUD) ----
+app.get("/api/tasks", async (req, res) => {
+  try {
+    const me = norm(req.query.me);
+    if (!me) return res.status(400).json({ error: "Missing me" });
+
+    let q = {};
+    if (me !== "tl") {
+      q = { $or: [{ assignedTo: me }, { createdBy: me }] };
+    }
+    const rows = await Task.find(q).sort({ createdAt: -1 }).limit(500).lean();
+    res.json(rows || []);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tasks", async (req, res) => {
+  try {
+    const title = String(req.body.title || "").trim();
+    const createdBy = norm(req.body.createdBy);
+    const assignedTo = norm(req.body.assignedTo || createdBy);
+    if (!title || !createdBy) {
+      return res.status(400).json({ error: "title and createdBy required" });
+    }
+    let dueDate = null;
+    if (req.body.dueDate) {
+      const d = new Date(req.body.dueDate);
+      if (!isNaN(d)) dueDate = d;
+    }
+    const saved = await Task.create({
+      title,
+      details: String(req.body.details || ""),
+      dueDate,
+      assignedTo,
+      createdBy,
+      status: "open",
+    });
+    res.json({ ok: true, task: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/tasks/:id", async (req, res) => {
+  try {
+    const _id = req.params.id;
+    const patch = {};
+    if (req.body.status) patch.status = String(req.body.status);
+    if (req.body.title) patch.title = String(req.body.title);
+    if (req.body.details) patch.details = String(req.body.details);
+    if (req.body.assignedTo) patch.assignedTo = norm(req.body.assignedTo);
+    if (req.body.dueDate) {
+      const d = new Date(req.body.dueDate);
+      if (!isNaN(d)) patch.dueDate = d;
+    }
+    const updated = await Task.findByIdAndUpdate(_id, patch, { new: true });
+    if (!updated) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true, task: updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/tasks/:id", async (req, res) => {
+  try {
+    const _id = req.params.id;
+    const found = await Task.findById(_id);
+    if (!found) return res.status(404).json({ error: "Not found" });
+    await Task.deleteOne({ _id });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* =======================================
+   STATIC PAGES (place at the VERY END)
+   ======================================= */
 function sendHtml(res, file) {
   const full = path.join(FRONTEND_DIR, file);
   if (fs.existsSync(full)) return res.sendFile(full);
   res.status(404).send("Page not found");
 }
+
 app.get("/", (_req, res) => sendHtml(res, "dashboard.html"));
-app.get("/:page", (req, res, next) => {
-  const file = req.params.page.endsWith(".html") ? req.params.page : `${req.params.page}.html`;
-  const candidate = path.join(FRONTEND_DIR, file);
-  fs.access(candidate, fs.constants.F_OK, (err) => {
-    if (err) return next();
-    return res.sendFile(candidate);
-  });
+
+// Serve any non-API path as an HTML page (ignore /api/*)
+app.get(/^\/(?!api\/).+$/, (req, res, next) => {
+  const page = req.path.replace(/^\//, "");
+  const file = page.endsWith(".html") ? page : `${page}.html`;
+  const cand = path.join(FRONTEND_DIR, file);
+  fs.access(cand, fs.constants.F_OK, (err) => (err ? next() : res.sendFile(cand)));
 });
-app.get(["/index", "/index.html"], (_req, res) => {
-  const idx = path.join(FRONTEND_DIR, "index.html");
-  if (fs.existsSync(idx)) return res.sendFile(idx);
-  return res.redirect("/dashboard.html");
-});
+
 app.use((_req, res) => res.status(404).send("Page not found"));
 
+/* =========================
+   LISTEN
+   ========================= */
 app.listen(PORT, HOST, () => {
-  console.log(`🚀 Server at http://${HOST}:${PORT}`);
-  console.log(`📁 Serving frontend from: ${FRONTEND_DIR}`);
-  console.log(`📂 Serving uploads from: ${UPLOAD_DIR} -> /uploads`);
+  console.log(`🚀 Server running on http://${HOST}:${PORT}`);
 });
